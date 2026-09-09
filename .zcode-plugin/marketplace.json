@@ -1,0 +1,10 @@
+{
+  "name": "browser-mcp-lab",
+  "plugins": [
+    {
+      "name": "browser-mcp-lab",
+      "description": "Self-developed browser automation: MV3 extension + zero-dependency MCP server (11 tools) driving your real browser tab, plus a usage skill distilled from live tests.",
+      "source": "plugin"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "browser-mcp-lab-server",
+  "version": "0.3.2",
+  "private": true,
+  "description": "Local MCP server pairing the Browser MCP Lab extension with AI agents. Zero dependencies.",
+  "type": "module",
+  "bin": {
+    "lab-browser-mcp": "index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,10 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head><meta charset="utf-8"><title>inner</title></head>
+<body style="font-family: sans-serif">
+  <h4>iframe 内部</h4>
+  <input id="inner-input" placeholder="在 iframe 里输入" />
+  <button id="inner-btn" onclick="document.getElementById('inner-status').textContent = '收到: ' + document.getElementById('inner-input').value">提交</button>
+  <div id="inner-status" style="color: green; margin-top: 8px;">(等待提交)</div>
+</body>
+</html>

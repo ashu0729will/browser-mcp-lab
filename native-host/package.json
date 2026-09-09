@@ -1,0 +1,5 @@
+{
+  "name": "browser-mcp-lab-native-host",
+  "private": true,
+  "type": "module"
+}

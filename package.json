@@ -1,0 +1,17 @@
+{
+  "name": "browser-mcp-lab",
+  "version": "0.3.2",
+  "private": true,
+  "description": "自研浏览器自动化闭环：MV3 扩展 + 零依赖 MCP server + 原生消息桥（11 个工具）。",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "server": "node server/index.js",
+    "test": "node server/test/server.test.js && node server/test/bridge.test.js && node server/test/disconnect.test.js",
+    "test:bridge": "node server/test/bridge.test.js",
+    "install:host": "node native-host/install.js"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,10 @@
+{
+  "name": "browser-mcp-lab",
+  "version": "1.1.0",
+  "description": "Self-developed browser automation for ZCode: the MV3 extension + zero-dependency MCP server (11 tools) drive your real browser tab with login state, plus a usage skill distilled from live tests.",
+  "author": {
+    "name": "ashu0729will"
+  },
+  "license": "MIT",
+  "skills": "skills"
+}

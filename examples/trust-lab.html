@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head><meta charset="utf-8"><title>事件保真度实验页</title>
+<style>body{font-family:system-ui,sans-serif;max-width:900px;margin:24px auto;line-height:1.6}
+input{width:240px;padding:6px;font:inherit}output{display:block;color:#0b5;font-family:ui-monospace,monospace;font-size:13px;margin:4px 0 18px}
+button{padding:6px 12px;font:inherit}</style></head>
+<body>
+<h2>事件保真度实验页</h2>
+<p>五个字段分别只接受一种事件条件，用于验证 <code>type</code> 走的路径。
+需通过 HTTP 访问（<code>python -m http.server</code>）；<code>file://</code> 下需在扩展详情页开启文件网址权限。</p>
+
+<p><b>A</b> <code>input</code> 且 <code>isTrusted === true</code></p>
+<input id="a"><button id="btnA" disabled>Submit A</button><output id="outA">(idle)</output>
+
+<p><b>B</b> <code>InputEvent</code> 且 <code>inputType === "insertText"</code></p>
+<input id="b"><button id="btnB" disabled>Submit B</button><output id="outB">(idle)</output>
+
+<p><b>C</b> 任意 <code>input</code> 事件</p>
+<input id="c"><button id="btnC" disabled>Submit C</button><output id="outC">(idle)</output>
+
+<p><b>D</b> 受信任的 <code>keyup</code>（当前实现不产生 key 事件，应保持禁用）</p>
+<input id="d"><button id="btnD" disabled>Submit D</button><output id="outD">(idle)</output>
+
+<p><b>E</b> <code>change</code> 事件</p>
+<input id="e"><button id="btnE" disabled>Submit E</button><output id="outE">(idle)</output>
+
+<script>
+  function wire(id, ok) {
+    var inp = document.getElementById(id);
+    var btn = document.getElementById('btn' + id.toUpperCase());
+    var out = document.getElementById('out' + id.toUpperCase());
+    inp.addEventListener('input', function (e) {
+      var pass = ok(e);
+      out.textContent =
+        'input: trusted=' + e.isTrusted +
+        ' ctor=' + (e.constructor ? e.constructor.name : '?') +
+        ' inputType=' + (e.inputType === undefined ? '-' : e.inputType) +
+        ' data=' + JSON.stringify(e.data === undefined ? null : e.data) +
+        ' value=' + JSON.stringify(inp.value) +
+        ' pass=' + pass;
+      if (pass) btn.disabled = false;
+    });
+  }
+  wire('a', function (e) { return e.isTrusted === true; });
+  wire('b', function (e) {
+    return typeof InputEvent !== 'undefined' && e instanceof InputEvent && e.inputType === 'insertText';
+  });
+  wire('c', function () { return true; });
+
+  (function () {
+    var inp = document.getElementById('d');
+    var btn = document.getElementById('btnD');
+    var out = document.getElementById('outD');
+    inp.addEventListener('keyup', function (e) {
+      var pass = e.isTrusted === true && inp.value !== '';
+      out.textContent = 'keyup: trusted=' + e.isTrusted + ' key=' + e.key + ' value=' + JSON.stringify(inp.value) + ' pass=' + pass;
+      if (pass) btn.disabled = false;
+    });
+  })();
+
+  (function () {
+    var inp = document.getElementById('e');
+    var btn = document.getElementById('btnE');
+    var out = document.getElementById('outE');
+    inp.addEventListener('change', function (e) {
+      var pass = inp.value !== '';
+      out.textContent = 'change: trusted=' + e.isTrusted + ' value=' + JSON.stringify(inp.value) + ' pass=' + pass;
+      if (pass) btn.disabled = false;
+    });
+  })();
+</script>
+</body>
+</html>

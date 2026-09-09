@@ -1,0 +1,9 @@
+{
+  "name": "browser_mcp_lab",
+  "description": "Browser MCP Lab native messaging bridge",
+  "path": "C:\\Users\\15197\\Desktop\\mcp\\native-host\\bridge.bat",
+  "type": "stdio",
+  "allowed_extensions": [
+    "browser-mcp-lab@ashu0729will.local"
+  ]
+}
