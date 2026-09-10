@@ -30,7 +30,8 @@
 
 6. 重开会话（MCP 服务器在会话启动时连接），点击浏览器扩展图标 → Connect。
    弹窗会显示实际通道（原生消息 / WebSocket）。
-   验证：navigate 打开 https://example.com，snapshot 读取页面结构。
+   验证：navigate 打开 https://example.com，snapshot 读取页面结构；
+   或跑真机冒烟 `node <仓库>/mcp-server/tests/live-smoke.js`（只用本地测试页，会自起 8123）。
 
 约束：
 - 不提交任何密钥或本机配置。

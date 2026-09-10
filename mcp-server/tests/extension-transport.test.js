@@ -127,6 +127,27 @@ function createHarness({ store = {} } = {}) {
       onAlarm: { addListener: (fn) => listeners.alarm.push(fn) },
     },
     action: { setBadgeText: () => {}, setBadgeBackgroundColor: () => {} },
+    // Chromium rejects an `undefined` inside args ("Value is unserializable")
+    // while Firefox's structured clone tolerated it, so this mock is deliberately
+    // as strict as Chrome to keep the cross-browser regression honest.
+    scripting: {
+      executeScript: async ({ args = [] }) => {
+        scriptingCalls.push(args);
+        if (args.some((value) => value === undefined)) {
+          throw new Error(
+            "Error in invocation of scripting.executeScript: Error at property 'args': Value is unserializable.",
+          );
+        }
+        return [{ result: { ok: true, args } }];
+      },
+    },
+    tabs: {
+      get: async (id) => ({ id, windowId: 1, active: true, status: "complete", url: "about:blank" }),
+      query: async () => [{ id: 1, windowId: 1, active: true, status: "complete", url: "about:blank" }],
+      update: async (id) => ({ id, windowId: 1, active: true }),
+      captureVisibleTab: async () => "data:image/png;base64,AAAA",
+    },
+    windows: { update: async () => ({}) },
   };
   Object.defineProperty(chromeMock.runtime, "lastError", {
     get: () => lastError,
@@ -195,16 +216,38 @@ function createHarness({ store = {} } = {}) {
       if (!listeners.message.length) resolve(undefined);
     });
   const status = () => sendMessage({ type: "status" });
+  const scriptingCalls = [];
+  // Drives a tool call through the live WebSocket and returns the reply frame.
+  const callTool = async (name, params) => {
+    const socket = webSockets.at(-1);
+    const id = `tool-${name}`;
+    socket.deliver({ id, tool: name, params });
+    await flush();
+    return socket.sent.find((m) => m.id === id);
+  };
 
   vm.createContext(sandbox);
   vm.runInContext(SW_SOURCE, sandbox, { filename: "service-worker.js" });
 
-  return { store, nativePorts, webSockets, listeners, flush, advance, fireAlarm, sendMessage, status };
+  return {
+    store,
+    nativePorts,
+    webSockets,
+    listeners,
+    flush,
+    advance,
+    fireAlarm,
+    sendMessage,
+    status,
+    callTool,
+    scriptingCalls,
+  };
 }
 
 // --- 1. native host missing: onDisconnect must fall back immediately ----------
 {
   const h = createHarness();
+  await h.flush();
   await h.flush();
   check("startTransport tries the native host first", h.nativePorts.length === 1);
   check("configure frame carries the port", h.nativePorts[0].sent.some((m) => m.type === "configure" && m.port === 9777));
@@ -366,7 +409,37 @@ function createHarness({ store = {} } = {}) {
   check("no transport is opened while disabled", h.nativePorts.length === 1 && h.webSockets.length === 0);
 }
 
-// --- 8. static branding, packaging and config consistency -------------------
+// --- 11. tool calls must survive Chromium's strict arg serialization --------
+{
+  const h = createHarness();
+  await h.flush();
+  h.nativePorts[0].fail("host missing");
+  await h.flush();
+  h.webSockets[0].open();
+  await h.flush();
+
+  // Only y supplied: the old code forwarded `undefined` for x, and Chromium
+  // refused the entire call with "Value is unserializable".
+  const scrolled = await h.callTool("scroll", { y: 300 });
+  check("scroll with a single axis succeeds", scrolled?.ok === true, JSON.stringify(scrolled));
+
+  const snapped = await h.callTool("snapshot", {});
+  check("snapshot call succeeds", snapped?.ok === true);
+
+  const clicked = await h.callTool("click", { ref: "#target", humanMode: false });
+  check("click call succeeds", clicked?.ok === true);
+
+  const evaluated = await h.callTool("evaluate", { expression: "document.title" });
+  check("evaluate call succeeds", evaluated?.ok === true);
+
+  check(
+    "no tool call ever forwarded an undefined argument",
+    h.scriptingCalls.length > 0 && h.scriptingCalls.every((args) => args.every((v) => v !== undefined)),
+    `${h.scriptingCalls.length} injection(s)`,
+  );
+}
+
+// --- 12. static branding, packaging and config consistency ------------------
 {
   check("manifest uses the new product name", MANIFEST.name === "Browser Session MCP");
   const csp = MANIFEST.content_security_policy?.extension_pages ?? "";
@@ -408,7 +481,7 @@ function createHarness({ store = {} } = {}) {
   );
 }
 
-// --- 9. no stale directory or brand references outside the allowlist --------
+// --- 13. no stale directory or brand references outside the allowlist -------
 {
   const SKIP_DIRS = new Set([".git", "node_modules", "screenshots", ".zcode"]);
   // Boundary-aware: "mcp-server/tests" must not match the "server/test" token.

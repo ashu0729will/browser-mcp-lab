@@ -121,10 +121,20 @@ node mcp-server/tests/extension-transport.test.js  # 59 项：扩展传输状态
 真机测试（需已加载扩展）：
 
 ```bash
+node mcp-server/tests/live-smoke.js             # 真机冒烟：本地测试页 + 断言页面真实变化（建议先跑）
 node mcp-server/tests/e2e-firefox.js
 node mcp-server/tests/real-click-test.js
 node mcp-server/tests/real-trust-test.js        # 以 isTrusted 判定点击事件来源
 node mcp-server/tests/demo-cursor.js
+```
+
+`live-smoke.js` 只访问本地测试页（自起 8123 端口），不需要外网，也不需要已登录的站点；
+`SMOKE_KEEP_SCREENSHOT=1` 会保留它截到的 PNG 供人工查看。
+想在全新配置里验证 Chromium（不改动你日常用的浏览器配置）：
+
+```bash
+msedge.exe --user-data-dir=<临时目录> --load-extension=<仓库>/browser-extension \
+           --disable-extensions-except=<仓库>/browser-extension --no-first-run
 ```
 
 需要 Node.js 22+（`bridge.js`、测试与 `mcp-server/tests/extension-transport.test.js` 使用内置 `WebSocket`）。

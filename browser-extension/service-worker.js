@@ -420,10 +420,14 @@ async function resolveTab(params) {
 }
 
 async function runInPage(tabId, func, args = [], options = {}) {
+  // chrome.scripting rejects an `undefined` anywhere in args ("Value is
+  // unserializable") while Firefox's structured clone tolerated it, so normalize
+  // once here instead of trusting every caller.
+  const safeArgs = args.map((value) => (value === undefined ? null : value));
   const [res] = await chrome.scripting.executeScript({
     target: { tabId },
     func,
-    args,
+    args: safeArgs,
     ...options,
   });
   if (!res) {

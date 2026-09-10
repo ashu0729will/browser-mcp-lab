@@ -109,6 +109,7 @@ Firefox 临时附加组件修改后无需点击「重载」：断开原生消息
 | `mcp-server/tests/bridge.test.js` | 8 项：请求转发、响应回传、心跳往返、`configure` 端口切换与非法端口 |
 | `mcp-server/tests/disconnect.test.js` | 4 项：断开后宽限期释放端口 |
 | `mcp-server/tests/extension-transport.test.js` | 59 项：在 `node:vm` 里跑真实 service worker，覆盖原生失败即时回退与端口释放、握手超时、双通道互斥、断开持久化、冷启动、旧回调隔离、端口校验，以及品牌/CSP/版本一致性 |
+| `mcp-server/tests/live-smoke.js` | 21 项真机冒烟（非离线）：自起本地测试页，驱动真实浏览器并断言页面确实变化（点击计数、受信任 `InputEvent`、跨 iframe、滚动、截图尺寸） |
 
 真机测试：`e2e-firefox.js`、`real-click-test.js`、`real-trust-test.js`、`demo-cursor.js`。
 

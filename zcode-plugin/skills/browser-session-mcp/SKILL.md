@@ -63,4 +63,7 @@ DOM 变化或页面重载后失效，重新 `snapshot` 即可。
 - 端口被占：清理残留服务器进程，或改 `BSM_PORT`。
 - 服务器日志：移除 `BSM_QUIET=1`。
 - 自检：`npm test`（四项离线测试，无需浏览器）、
-  `node mcp-server/tests/e2e-firefox.js`（需扩展已加载）。
+  `node mcp-server/tests/live-smoke.js`（真机冒烟，只用本地测试页，需扩展已连接）、
+  `node mcp-server/tests/e2e-firefox.js`（需外网）。
+- 返回 `unserializable` 一类注入报错：说明某个工具参数没传，Chromium 拒绝 `undefined`；
+  升级到含 `runInPage` 参数规范化的版本即可。
