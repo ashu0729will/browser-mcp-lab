@@ -88,7 +88,12 @@ Chromium 系需把扩展 ID 写入 `native-messaging-host/chrome-extension-id.tx
 
 - 原生消息通道优先；WebSocket 回退，仅监听 `127.0.0.1`
 - 弹窗里改端口对**两条通道**都生效：扩展通过 `configure` 控制帧让桥进程切换下游端口
-- 原生宿主不可用（未注册 / 启动失败 / 握手超时 2s）时立即回退 WebSocket，不等 30s 定时器
+- 原生宿主**不存在**（未注册 / 启动失败）时立即回退 WebSocket，不等 30s 定时器
+- 原生宿主存在但其 MCP 服务器尚未就绪时，扩展保留原生端口并先用 WebSocket；
+  原生通道一旦回帧就**自动晋升为主通道**并关掉 WebSocket（所以「先开浏览器、后起 agent 服务器」
+  也会落到原生通道）
+- 用户在标签页/窗口间操作时会触发一次重连检查（MV3 的定时器会随 worker 挂起丢失，
+  alarms 最小周期在 Firefox 上被抬到 1 分钟）
 - 同一时刻只维持一条通道；旧连接的回调按世代号丢弃，不会污染新连接
 - 应用层心跳 5s + 双向 ping/pong 往返 + 半开连接清扫（2.5 个周期）
 - 浏览器断开后 15s 释放端口（`BSM_EXIT_ON_DISCONNECT=0` 可关闭）
@@ -108,6 +113,22 @@ Chromium 系需把扩展 ID 写入 `native-messaging-host/chrome-extension-id.tx
 | `BSM_QUIET` | 关闭 | `1` 静音日志 |
 | `BSM_WS_URL` | — | 仅原生桥：初始下游地址（弹窗端口仍可覆盖） |
 
+## 排查
+
+连接出问题时先跑自检（不启动服务器、不需要浏览器；输出到 stdout，不受 `BSM_QUIET` 影响）：
+
+```bash
+node mcp-server/index.js --doctor
+```
+
+它逐项回答：`BSM_PORT`（默认 9777）当前是否空闲、Chromium 原生宿主在 Mozilla / Chrome / Edge 下
+是否已注册且 manifest 文件确实存在、`native-messaging-host/chrome-extension-id.txt` 是否有效、
+以及等待窗口内是否真的有客户端连上来（等待时长用 `BSM_DOCTOR_WAIT_MS`，默认 3000，`0` 表示只探测不等待）。
+最后一行 `VERDICT:` 给出结论与下一步：`extension-connected` / `port-busy` / `no-client-yet`。
+
+工具调用的连接错误信息现在分两种：**从未有浏览器连接过**（提示打开浏览器、点扩展图标的 Connect），
+与**曾经连接、当前已断开**（附上次断连时间与原因，提示在弹窗里 Disconnect 再 Connect）；两种都会指路 `--doctor`。
+
 ## 测试
 
 ```bash
@@ -115,7 +136,7 @@ npm test                                        # 全部离线测试（无需浏
 node mcp-server/tests/server.test.js            # 28 项：握手、工具 schema、调用、截图落盘
 node mcp-server/tests/bridge.test.js            # 8 项：桥转发、心跳、configure 端口切换
 node mcp-server/tests/disconnect.test.js        # 4 项：断开后释放端口
-node mcp-server/tests/extension-transport.test.js  # 59 项：扩展传输状态机（mock chrome/WebSocket）
+node mcp-server/tests/extension-transport.test.js  # 70 项：扩展传输状态机（mock chrome/WebSocket）
 ```
 
 真机测试（需已加载扩展）：

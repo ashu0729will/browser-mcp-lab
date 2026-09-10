@@ -5,8 +5,10 @@
 // Env: BSM_PORT BSM_CONNECT_WAIT_MS BSM_KEEPALIVE_MS BSM_REQUEST_TIMEOUT_MS
 //      BSM_DISCONNECT_GRACE_MS BSM_EXIT_ON_DISCONNECT BSM_QUIET (legacy BML_* aliases work)
 import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createWsServer, isPortInUse } from "./websocket.js";
 
 const VERSION = "0.3.3";
@@ -75,6 +77,15 @@ for (const warning of envWarnings) console.error(`[browser-session-mcp] env: ${w
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// --doctor runs before main() so no server or socket is started. It sits after
+// the configuration constants because it reads PORT/intEnv/sleep — a dispatch
+// placed next to the --version check would hit their temporal dead zone.
+if (process.argv.includes("--doctor")) {
+  await runDoctor();
+  await new Promise((resolve) => process.stdout.write("", resolve));
+  process.exit(0);
+}
+
 // ---------------------------------------------------------------------------
 // Extension connection management
 // ---------------------------------------------------------------------------
@@ -83,6 +94,16 @@ let conn = null; // current WsConnection from our extension
 const pending = new Map(); // request id -> {resolve, reject, timer}
 
 let disconnectTimer = null;
+
+// Connection history: makes connection errors actionable and feeds --doctor.
+const history = {
+  everConnected: false,
+  connections: 0,
+  lastConnectedAt: null,
+  lastClosedAt: null,
+  lastCloseReason: null,
+  waitTimeouts: 0,
+};
 
 function adoptConnection(next) {
   if (conn && conn !== next) {
@@ -99,10 +120,17 @@ function adoptConnection(next) {
     log("browser came back; port-release timer cancelled");
   }
   conn = next;
+  history.everConnected = true;
+  history.connections += 1;
+  history.lastConnectedAt = new Date().toISOString();
   next.onmessage = (text) => handleExtensionMessage(next, text);
   next.onclose = () => {
     if (conn !== next) return; // stale socket already superseded
     conn = null;
+    history.lastClosedAt = new Date().toISOString();
+    history.lastCloseReason = EXIT_ON_DISCONNECT
+      ? "extension disconnected; port released after grace"
+      : "extension disconnected";
     log("extension disconnected");
     if (EXIT_ON_DISCONNECT) {
       log(
@@ -163,10 +191,23 @@ async function sendToExtension(tool, params = {}, timeoutMs = REQUEST_TIMEOUT_MS
   const started = Date.now();
   const target = await acquireConnection();
   if (!target || !target.open) {
+    history.waitTimeouts += 1;
+    const waited = Date.now() - started;
+    if (!history.everConnected) {
+      throw new Error(
+        `No browser has connected to this server yet (waited ${waited}ms on port ${PORT}). ` +
+          `Open the browser, click the "Browser Session MCP" extension icon and press Connect. ` +
+          `Diagnose with: node mcp-server/index.js --doctor`,
+      );
+    }
+    const ago = history.lastClosedAt
+      ? `${Math.round((Date.now() - Date.parse(history.lastClosedAt)) / 1000)}s ago`
+      : "recently";
+    const reason = history.lastCloseReason ? `: ${history.lastCloseReason}` : "";
     throw new Error(
-      `No connection to the browser extension (waited ${Date.now() - started}ms). ` +
-        `Open the browser and click the "Browser Session MCP" extension icon, then press Connect. ` +
-        `If it claims to be connected already, toggle Disconnect then Connect to revive the MV3 worker.`,
+      `The browser extension is not connected right now (last connection ended ${ago}${reason}; ` +
+        `waited ${waited}ms on port ${PORT}). Revive it from the extension popup (Disconnect then Connect). ` +
+        `Diagnose with: node mcp-server/index.js --doctor`,
     );
   }
   const id = crypto.randomUUID();
@@ -515,6 +556,141 @@ process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 process.on("uncaughtException", (err) => log("uncaught exception (recovered):", String(err)));
 process.on("unhandledRejection", (err) => log("unhandled rejection (recovered):", String(err)));
+
+// ---------------------------------------------------------------------------
+// --doctor: one-shot, read-only diagnosis (stdout, never touches BSM_QUIET)
+// ---------------------------------------------------------------------------
+
+async function runDoctor() {
+  const hostDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "native-messaging-host");
+  const chromeIdFile = path.join(hostDir, "chrome-extension-id.txt");
+  const nativeHostName = "browser_session_mcp";
+  const waitMs = intEnv("BSM_DOCTOR_WAIT_MS", undefined, 3000);
+  const line = (level, name, detail) => console.log(`${level}  ${name}  ${detail}`);
+
+  // 1. Can this server listen where it was told to?
+  const busy = await isPortInUse(PORT);
+  if (busy) {
+    line(
+      "WARN",
+      "port",
+      `${PORT} is already in use — another Browser Session MCP instance or another program holds it; set BSM_PORT to move this server`,
+    );
+  } else {
+    line("OK", "port", `${PORT} is free on 127.0.0.1`);
+  }
+
+  // 2. Chromium needs the unpacked extension id to build a native-messaging manifest.
+  let extensionId = null;
+  try {
+    extensionId = fs.readFileSync(chromeIdFile, "utf8").trim();
+  } catch {
+    /* file missing */
+  }
+  if (extensionId && /^[a-p]{32}$/.test(extensionId)) {
+    line("OK", "extension-id-file", `${chromeIdFile} → ${extensionId}`);
+  } else {
+    line(
+      "WARN",
+      "extension-id-file",
+      "missing or invalid — Chromium native messaging stays unavailable and the extension uses the WebSocket fallback (expected degradation)",
+    );
+  }
+
+  // 3. Native-messaging registry entries (per browser) and their manifest files.
+  if (process.platform !== "win32") {
+    line("WARN", "native-host", "registry check is Windows-only — cannot verify native messaging registration");
+  } else {
+    const registrations = [
+      ["Mozilla", `HKCU\\Software\\Mozilla\\NativeMessagingHosts\\${nativeHostName}`],
+      ["Chrome", `HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\${nativeHostName}`],
+      ["Edge", `HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\${nativeHostName}`],
+    ];
+    for (const [browser, key] of registrations) {
+      let manifest = null;
+      try {
+        const output = execFileSync("reg", ["query", key, "/ve"], { encoding: "utf8" });
+        manifest = /REG_SZ\s+(.+)/.exec(output)?.[1]?.trim() ?? null;
+      } catch {
+        /* key not registered */
+      }
+      if (!manifest) {
+        line("WARN", "native-host", `${browser}: not registered — the WebSocket fallback will be used`);
+      } else if (!fs.existsSync(manifest)) {
+        line("FAIL", "native-host", `${browser}: registered → ${manifest} (manifest file is missing)`);
+      } else {
+        line("OK", "native-host", `${browser}: registered → ${manifest}`);
+      }
+    }
+  }
+
+  // 4. Really listen on the configured port and see whether anything connects.
+  let clientConnected = false;
+  let clientInfo = null;
+  if (busy) {
+    line("WARN", "client", `cannot probe 127.0.0.1:${PORT} while the port is busy`);
+  } else {
+    let server = null;
+    let conn = null;
+    try {
+      server = await createWsServer({
+        port: PORT,
+        onConnection: (next) => {
+          conn = next;
+          clientConnected = true;
+          next.onmessage = (text) => {
+            try {
+              const msg = JSON.parse(text);
+              if (msg?.type === "hello") clientInfo = `${msg.name ?? "?"} v${msg.version ?? "?"}`;
+            } catch {
+              /* not a hello frame */
+            }
+          };
+        },
+      });
+      const deadline = Date.now() + waitMs;
+      while (!clientConnected && Date.now() < deadline) {
+        await sleep(Math.max(1, Math.min(100, deadline - Date.now())));
+      }
+    } catch (err) {
+      line("FAIL", "client", `could not listen on 127.0.0.1:${PORT}: ${err?.message ?? err}`);
+    } finally {
+      try {
+        conn?.destroy();
+      } catch {
+        /* already gone */
+      }
+      if (server) await new Promise((resolve) => server.close(resolve));
+    }
+    if (clientConnected) {
+      line(
+        "OK",
+        "client",
+        `a client connected on 127.0.0.1:${PORT} within ${waitMs}ms${clientInfo ? ` (${clientInfo})` : ""}`,
+      );
+    } else {
+      line(
+        "WARN",
+        "client",
+        `no client connected within ${waitMs}ms — open the browser, click the "Browser Session MCP" extension icon and press Connect`,
+      );
+    }
+  }
+
+  if (clientConnected) {
+    console.log(
+      "VERDICT: extension-connected — the transport works from this machine; restart your MCP server if it still reports no connection",
+    );
+  } else if (busy) {
+    console.log(
+      `VERDICT: port-busy — port ${PORT} is held by another process; stop it or set BSM_PORT for this server`,
+    );
+  } else {
+    console.log(
+      'VERDICT: no-client-yet — open the browser, click the "Browser Session MCP" extension icon and press Connect',
+    );
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Startup

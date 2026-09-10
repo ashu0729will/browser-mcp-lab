@@ -177,7 +177,10 @@ function scheduleReconnect(generation) {
 }
 
 function openWebSocket(port, generation) {
-  if (disabled || generation !== transportGeneration || nmPort) return;
+  // A native port that has not produced its first frame yet does not block the
+  // fallback: it stays open (the bridge is alive, its server is just not up) and
+  // gets promoted later if it ever answers.
+  if (disabled || generation !== transportGeneration || (nmPort && nativeReady)) return;
   if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
 
   let socket;
@@ -258,14 +261,20 @@ function openNative(port, generation) {
   }
 
   nmPort = localPort;
-  nativeReady = false;
-  updateBadge();
-
   localPort.onMessage.addListener((msg) => {
     if (generation !== transportGeneration || nmPort !== localPort || disabled) return;
     clearNativeConnectTimer();
+    const promoted = !nativeReady && Boolean(ws);
     nativeReady = true;
     markActivity("native", localPort);
+    if (promoted) {
+      // The host was silent during the handshake, so we were on the WebSocket;
+      // it answered now, so prefer the native channel and drop the socket.
+      // closeWebSocket() clears `ws` first, so the socket's own onclose cannot
+      // schedule a reconnect, and in-flight replies route to the live channel.
+      console.log("[browser-session-mcp] native channel answered — promoting it");
+      closeWebSocket();
+    }
     updateBadge();
     route(msg, (obj) => replyToCaller(generation, "native", localPort, obj));
   });
@@ -276,7 +285,13 @@ function openNative(port, generation) {
 
   nativeConnectTimer = setTimeout(() => {
     if (!nativeReady) {
-      fallbackToWebSocket(port, generation, localPort, "handshake timed out");
+      // The host process exists (no onDisconnect fired) but nothing came back:
+      // its MCP server is not reachable yet. Keep the port open and use the
+      // WebSocket meanwhile — a later frame promotes the native channel.
+      console.log(
+        "[browser-session-mcp] native host silent during handshake — using the WebSocket until it answers",
+      );
+      openWebSocket(port, generation);
     }
   }, NATIVE_CONNECT_TIMEOUT_MS);
 
@@ -353,6 +368,14 @@ chrome.runtime.onInstalled.addListener(async () => {
 });
 chrome.runtime.onStartup.addListener(() => void startTransport());
 chrome.alarms.onAlarm.addListener((alarm) => void handleHealthAlarm(alarm));
+
+// MV3 kills the setTimeout reconnect chain when the worker suspends, and alarms
+// cannot run more often than every 30s; real user activity aligns reconnection
+// with the moment a browser is actually in use. Both handlers are idempotent:
+// startTransport() returns early while a channel is open or already starting,
+// and stays idle while the user has pressed Disconnect.
+chrome.tabs.onActivated.addListener(() => void startTransport());
+chrome.windows.onFocusChanged.addListener(() => void startTransport());
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
     if (msg?.type === "status") {

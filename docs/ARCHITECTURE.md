@@ -35,8 +35,9 @@ browser-extension/                   MV3 扩展（service worker 执行工具）
   - 传输由单一状态机管理：`disabled | idle | connecting | online(native|websocket)`；
   - 每次启动/重建都递增**世代号**，原生端口与 WebSocket 的回调都先校验世代号与对象身份，
     迟到的 `onDisconnect` / `onclose` 不会影响新连接；
-  - 原生优先：连上原生宿主后先发 `configure`（端口）与 `hello`，2s 内未收到任何帧即判定
-    握手失败并回退 WebSocket；`onDisconnect`（宿主不存在时按异步方式上报）也立即回退；
+  - 原生优先：连上原生宿主后先发 `configure`（端口）与 `hello`，2s 内未收到任何帧则**保留端口**
+    并先用 WebSocket；原生通道之后一旦回帧就晋升为主通道（关掉 WebSocket，世代号不变，
+    在途调用按 `replyToCaller` 改走原生通道）；宿主进程消失（`onDisconnect`）才真正回退；
   - `chrome.alarms`（30s）做健康检查：只在当前通道上发 ping，超时则切换/重连，绝不并行开第二条通道；
   - `snapshot` 枚举可交互元素（`a[href] / button / input / textarea / select / summary /
     [role=…] / [onclick]`），生成稳定 CSS 选择器 `ref`（优先 `#id`，否则
@@ -100,6 +101,11 @@ Firefox 临时附加组件修改后无需点击「重载」：断开原生消息
 - 环境变量：`BSM_PORT` `BSM_CONNECT_WAIT_MS` `BSM_KEEPALIVE_MS` `BSM_REQUEST_TIMEOUT_MS`
   `BSM_DISCONNECT_GRACE_MS` `BSM_EXIT_ON_DISCONNECT` `BSM_QUIET`（旧 `BML_*` 名称仍被接受），
   以及仅桥使用的 `BSM_WS_URL`。
+- 挂起感知重连：`chrome.tabs.onActivated` / `chrome.windows.onFocusChanged` 也会触发幂等的
+  `startTransport()`，把重连对齐到「真的在用浏览器」的那一刻，不依赖会随 MV3 worker 挂起丢失的 3s 定时器。
+- `--doctor` 自检：`node mcp-server/index.js --doctor` 逐项检查端口占用、原生宿主注册与 manifest、
+  扩展 ID 文件、以及等待窗口（`BSM_DOCTOR_WAIT_MS`，默认 3000ms）内是否有客户端连上，末行 `VERDICT:` 给结论；
+  服务器同时记录连接历史（是否连过、上次断开时间与原因），连接错误据此区分「从未连接」与「曾连接已断开」。
 
 ## 6. 测试
 
@@ -108,7 +114,7 @@ Firefox 临时附加组件修改后无需点击「重载」：断开原生消息
 | `mcp-server/tests/server.test.js` | 28 项：握手、工具枚举、严格 schema、工具调用、参数透传、截图落盘与命名 |
 | `mcp-server/tests/bridge.test.js` | 8 项：请求转发、响应回传、心跳往返、`configure` 端口切换与非法端口 |
 | `mcp-server/tests/disconnect.test.js` | 4 项：断开后宽限期释放端口 |
-| `mcp-server/tests/extension-transport.test.js` | 59 项：在 `node:vm` 里跑真实 service worker，覆盖原生失败即时回退与端口释放、握手超时、双通道互斥、断开持久化、冷启动、旧回调隔离、端口校验，以及品牌/CSP/版本一致性 |
+| `mcp-server/tests/extension-transport.test.js` | 70 项：在 `node:vm` 里跑真实 service worker，覆盖原生失败即时回退、握手超时后的原生晋升、双通道互斥、断开持久化、冷启动、旧回调隔离、端口校验、`tabs.onActivated` / `windows.onFocusChanged` 唤醒重连，以及品牌/CSP/版本一致性 |
 | `mcp-server/tests/live-smoke.js` | 21 项真机冒烟（非离线）：自起本地测试页，驱动真实浏览器并断言页面确实变化（点击计数、受信任 `InputEvent`、跨 iframe、滚动、截图尺寸） |
 
 真机测试：`e2e-firefox.js`、`real-click-test.js`、`real-trust-test.js`、`demo-cursor.js`。

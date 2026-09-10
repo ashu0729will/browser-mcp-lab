@@ -30,8 +30,8 @@ const check = (name, cond, detail = "") => {
   if (!cond) failures.push(name);
 };
 
-function createHarness({ store = {} } = {}) {
-  const listeners = { installed: [], startup: [], alarm: [], message: [] };
+function createHarness({ store = {}, nativeHostMissing = false } = {}) {
+  const listeners = { installed: [], startup: [], alarm: [], message: [], tabActivated: [], windowFocused: [] };
   const nativePorts = [];
   const webSockets = [];
   const timers = new Map();
@@ -63,6 +63,17 @@ function createHarness({ store = {} } = {}) {
     open() {
       this.readyState = 1;
       this.onopen?.({});
+    }
+    fail() {
+      // Simulates a mid-flight transport error: onerror first, then onclose.
+      this.readyState = 3;
+      if (!this._closeDispatched) {
+        this._closeDispatched = true;
+        queueMicrotask(() => {
+          this.onerror?.({});
+          this.onclose?.({});
+        });
+      }
     }
     deliver(obj) {
       this.onmessage?.({ data: JSON.stringify(obj) });
@@ -113,6 +124,10 @@ function createHarness({ store = {} } = {}) {
     runtime: {
       getManifest: () => MANIFEST,
       connectNative: () => {
+        // `nativeHostMissing` models a machine where the host is not installed:
+        // every attempt fails synchronously and the extension falls straight to
+        // the WebSocket, which is what the wake-up regression test needs.
+        if (nativeHostMissing) throw new Error("Specified native messaging host not found.");
         const port = makePort();
         nativePorts.push(port);
         return port;
@@ -146,8 +161,12 @@ function createHarness({ store = {} } = {}) {
       query: async () => [{ id: 1, windowId: 1, active: true, status: "complete", url: "about:blank" }],
       update: async (id) => ({ id, windowId: 1, active: true }),
       captureVisibleTab: async () => "data:image/png;base64,AAAA",
+      onActivated: { addListener: (fn) => listeners.tabActivated.push(fn) },
     },
-    windows: { update: async () => ({}) },
+    windows: {
+      update: async () => ({}),
+      onFocusChanged: { addListener: (fn) => listeners.windowFocused.push(fn) },
+    },
   };
   Object.defineProperty(chromeMock.runtime, "lastError", {
     get: () => lastError,
@@ -203,6 +222,14 @@ function createHarness({ store = {} } = {}) {
     for (const fn of listeners.alarm) fn({ name: "transport-health" });
     await flush();
   };
+  const fireTabActivated = async () => {
+    for (const fn of listeners.tabActivated) fn();
+    await flush();
+  };
+  const fireWindowFocused = async () => {
+    for (const fn of listeners.windowFocused) fn();
+    await flush();
+  };
   const sendMessage = (msg) =>
     new Promise((resolve) => {
       let settled = false;
@@ -237,6 +264,8 @@ function createHarness({ store = {} } = {}) {
     flush,
     advance,
     fireAlarm,
+    fireTabActivated,
+    fireWindowFocused,
     sendMessage,
     status,
     callTool,
@@ -297,7 +326,24 @@ function createHarness({ store = {} } = {}) {
   check("handshake pending before the timeout", h.webSockets.length === 0);
   await h.advance(2500);
   check("silent native host times out into the WebSocket fallback", h.webSockets.length === 1);
-  check("timed-out native port is disposed", h.nativePorts[0].disconnected === true);
+  check(
+    "native port is kept alive for a later promotion",
+    h.nativePorts[0].disconnected === false,
+    String(h.nativePorts[0].disconnected),
+  );
+  h.webSockets[0].open();
+  await h.flush();
+  check("status reports the WebSocket while native is silent", (await h.status()).transport === "websocket");
+
+  // The host answers only now (its MCP server came up late): the native channel
+  // must take over and the WebSocket must be dropped, without duplicating it.
+  h.nativePorts[0].emit({ type: "pong" });
+  await h.flush();
+  const promoted = await h.status();
+  check("native channel is promoted once it answers", promoted.transport === "native", String(promoted.transport));
+  check("WebSocket is dropped after promotion", h.webSockets[0].readyState === 3);
+  await h.advance(10000);
+  check("promotion does not spawn another WebSocket", h.webSockets.length === 1);
 }
 
 // --- 4. disconnect closes both transports and persists ----------------------
@@ -439,7 +485,29 @@ function createHarness({ store = {} } = {}) {
   );
 }
 
-// --- 12. static branding, packaging and config consistency ------------------
+// --- 12. human activity (tab switch / window focus) wakes the transport ------
+{
+  // Native host missing: every reconnect attempt falls straight to the WebSocket.
+  const h = createHarness({ nativeHostMissing: true });
+  await h.flush();
+  h.webSockets[0].fail();
+  await h.flush();
+
+  // Deliberately no advance(): MV3 may suspend the worker before the 3s
+  // reconnect timer runs, so the event has to do the work on its own.
+  await h.fireTabActivated();
+  check("tab activation reconnects immediately without any timer", h.webSockets.length === 2);
+
+  h.webSockets[1].open();
+  await h.flush();
+  await h.fireWindowFocused();
+  check(
+    "window focus is a no-op while a channel is already open",
+    h.webSockets.length === 2,
+  );
+}
+
+// --- 13. static branding, packaging and config consistency ------------------
 {
   check("manifest uses the new product name", MANIFEST.name === "Browser Session MCP");
   const csp = MANIFEST.content_security_policy?.extension_pages ?? "";
@@ -481,7 +549,7 @@ function createHarness({ store = {} } = {}) {
   );
 }
 
-// --- 13. no stale directory or brand references outside the allowlist -------
+// --- 14. no stale directory or brand references outside the allowlist -------
 {
   const SKIP_DIRS = new Set([".git", "node_modules", "screenshots", ".zcode"]);
   // Boundary-aware: "mcp-server/tests" must not match the "server/test" token.
