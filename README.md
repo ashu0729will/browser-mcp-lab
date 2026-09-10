@@ -176,9 +176,13 @@ msedge.exe --user-data-dir=<临时目录> --load-extension=<仓库>/browser-exte
 - Chromium 系原生通道需手填扩展 ID 才能启用，缺省走 WebSocket。
 - 浏览器**禁止扩展触碰附加组件商店域名**（Firefox 的 `addons.mozilla.org`、Chrome 的 Web Store），
   这些页面所有工具都会报 `Missing host permission for the tab`——这是浏览器的强制限制，不是缺陷。
+  实测同一轮内普通 https 站点注入正常，而 `addons.mozilla.org` 与 `support.mozilla.org` 都失败，
+  说明 Firefox 对 Mozilla 自有域名整体禁注入，`<all_urls>` 对它无效。
 - 页面 CSP 会拦 `evaluate`（该工具在 MAIN world 用 `Function` 构造求值），严格 CSP 的站点
-  （如 chatgpt.com）会报 `call to Function() blocked by CSP`；改用 `snapshot` + `click` / `type` /
-  `press_key`，它们不受页面 CSP 影响。
+  （如 chatgpt.com）会报 `call to Function() blocked by CSP`；用带严格 CSP 的本地页实测，
+  `snapshot` / `click` / `type` / `screenshot` 均不受影响，改用这些工具即可。
+- `navigate` 不能前往 `about:*` 等特权页（浏览器 API 直接拒绝，报 `Illegal URL`）；
+  特权页同样不可注入，需要先在普通网页上操作。
 - 原生消息宿主名、Firefox gecko ID 均已随改名更新；旧宿主注册表键由安装脚本自动清理。
 
 ## 里程碑
