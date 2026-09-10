@@ -15,7 +15,10 @@
     "test:bridge": "node mcp-server/tests/bridge.test.js",
     "test:transport": "node mcp-server/tests/extension-transport.test.js",
     "install:host": "node native-messaging-host/install.js",
-    "install:native-host": "node native-messaging-host/install.js"
+    "install:host": "node native-messaging-host/install.js",
+    "install:native-host": "node native-messaging-host/install.js",
+    "package:store": "node tools/package-extension.js",
+    "lint:firefox": "npx --yes web-ext lint --source-dir browser-extension"
   },
   "license": "MIT"
 }

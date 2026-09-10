@@ -14,3 +14,6 @@ screenshots/
 native-messaging-host/chrome-extension-id.txt
 native-messaging-host/browser_session_mcp.chrome.json
 native-messaging-host/browser_session_mcp.firefox.json
+
+# Store packages built by tools/package-extension.js
+dist/

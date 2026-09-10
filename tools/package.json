@@ -1,0 +1,8 @@
+{
+  "name": "browser-session-mcp-tools",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  }
+}

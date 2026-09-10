@@ -46,6 +46,29 @@ node mcp-server/index.js --doctor
 它逐项检查端口占用、原生宿主注册与 manifest、Chromium 扩展 ID 文件，并在等待窗口内确认是否有客户端连上；
 末行 `VERDICT:`（`extension-connected` / `port-busy` / `no-client-yet`）给出结论。
 
+## 打包上架
+
+```bash
+npm run package:store        # 或 node tools/package-extension.js
+```
+
+输出到 `dist/`（已被 `.gitignore` 忽略）：
+
+- `browser-session-mcp-firefox-<version>.zip`：保留 `background.scripts`，并补上 AMO 要求的
+  `browser_specific_settings.gecko.data_collection_permissions`，同时去掉 Firefox 会忽略的 `service_worker`；
+- `browser-session-mcp-chrome-<version>.zip`：保留 `service_worker`，去掉 Firefox 专属的
+  `browser_specific_settings` 与 `background.scripts`。
+
+打包器是确定性的（条目排序、固定时间戳），同样源码重复构建得到完全相同的字节；它还会校验必需文件、
+图标尺寸、以及清单版本与 `package.json` 是否一致，不一致直接以非零码退出。
+
+上架前建议再跑一次 Firefox 官方校验器（`npm run lint:firefox`），并在干净配置里用
+`--load-extension` 装上包内文件跑一遍真机冒烟，确认打包产物本身可用。
+
+改动版本号时，`package.json` 与 `browser-extension/manifest.json` 必须同步；商店要求版本严格递增。
+Chrome 上架后扩展 ID 会变化，记得把它写进 `native-messaging-host/chrome-extension-id.txt` 并重跑安装脚本，
+否则原生通道无法启用（会走 WebSocket 回退）。
+
 ## 不入库的文件
 
 以下都是机器本地生成物，`.gitignore` 已覆盖，不要 `git add -f`：
