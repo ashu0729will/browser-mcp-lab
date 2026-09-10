@@ -52,8 +52,10 @@ DOM 变化或页面重载后失效，重新 `snapshot` 即可。
 3. **特权页不可注入**（`about:*` 等）：需先 `navigate` 到普通网页。
 4. **`file://` 页面**需在扩展详情页开启「允许访问文件网址」；或本地起 HTTP 服务
    （测试页在 `test-pages/`）。
-5. **浏览器自身 UI 够不到**（保存密码、扩展批准框等）。
-6. **`click` / `type` 默认带虚拟光标动画**（约 0.45–0.8s），批量操作传 `humanMode: false`。
+5. **浏览器自身 UI 够不到**（保存密码、扩展批准框等）；**附加组件商店域名被浏览器禁止注入**
+   （Firefox 的 `addons.mozilla.org`、Chrome 的 Web Store），这些页面会报 `Missing host permission for the tab`。
+6. **严格 CSP 的站点会让 `evaluate` 失败**（`call to Function() blocked by CSP`，例如 chatgpt.com）：
+   改用 `snapshot` + `click` / `type` / `press_key`，这些工具不受页面 CSP 影响。
 7. **纯客户端 `disabled` 门槛**用 `click(ref, {force: true})` 越过，服务端校验照旧生效。
 
 ## 故障排查
