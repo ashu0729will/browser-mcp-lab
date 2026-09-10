@@ -12,7 +12,7 @@ AI agent 可直接操控当前浏览器会话并复用登录态，链路不含�
 AI agent
    │  MCP over stdio（JSON-RPC 2.0）
    ▼
-mcp-server/index.js                  MCP 服务器（零依赖，11 个工具）
+mcp-server/index.js                  MCP 服务器（零依赖，12 个工具）
    │  ① native-messaging-host/bridge.js   原生消息通道（首选）
    │  ② ws://127.0.0.1:9777               WebSocket 回退（mcp-server/websocket.js）
    ▼
@@ -77,7 +77,8 @@ Chromium 系需把扩展 ID 写入 `native-messaging-host/chrome-extension-id.tx
 | `click` | 点击元素；`humanMode: false` 关闭虚拟光标动画；`force: true` 越过客户端 `disabled` |
 | `type` | 输入文本；`clear: false` 追加；`humanMode: false` 关动画；优先走浏览器原生编辑管线 |
 | `press_key` | 按键（合成事件，见兼容性说明） |
-| `evaluate` | 页面 MAIN world 执行 JS |
+| `evaluate` | 在页面 MAIN world 执行 JS；`world: auto`（默认）/ `main` / `isolated` |
+| `read` | 不执行 JS，直接读取某个元素的文本 / 值 / 选中态 / 可见性 / 属性（CSP 严格页面上替代 `evaluate`） |
 | `screenshot` | 截图 PNG，落盘 `./screenshots/`；`tabId` 可指定标签页 |
 | `scroll` | 按像素滚动 |
 | `tabs_list` / `tab_select` | 标签页枚举与切换 |
@@ -177,10 +178,12 @@ msedge.exe --user-data-dir=<临时目录> --load-extension=<仓库>/browser-exte
 - 浏览器**禁止扩展触碰附加组件商店域名**（Firefox 的 `addons.mozilla.org`、Chrome 的 Web Store），
   这些页面所有工具都会报 `Missing host permission for the tab`——这是浏览器的强制限制，不是缺陷。
   实测同一轮内普通 https 站点注入正常，而 `addons.mozilla.org` 与 `support.mozilla.org` 都失败，
-  说明 Firefox 对 Mozilla 自有域名整体禁注入，`<all_urls>` 对它无效。
-- 页面 CSP 会拦 `evaluate`（该工具在 MAIN world 用 `Function` 构造求值），严格 CSP 的站点
-  （如 chatgpt.com）会报 `call to Function() blocked by CSP`；用带严格 CSP 的本地页实测，
-  `snapshot` / `click` / `type` / `screenshot` 均不受影响，改用这些工具即可。
+- 页面 CSP 会拦 `evaluate`：该工具要在页面里求值，只能靠 `Function`，而严格 CSP 的站点
+  （如 chatgpt.com）禁止 eval。实测两个引擎都是**两个世界都拦**——MAIN world 被页面 CSP 拦，
+  隔离世界被扩展自身的 MV3 CSP 拦——所以 `world: auto` 的隔离回退基本不会生效；
+  拦下时会明确报错（Chromium 会把被拦的注入解析成 `null`，我们靠哨兵包装识别，绝不把
+  「没跑成」当成「结果是 null」），并指向可用的替代路径：`read`（读元素状态，不执行 JS）、
+  `snapshot`、`click` / `type` / `press_key`。
 - `navigate` 不能前往 `about:*` 等特权页（浏览器 API 直接拒绝，报 `Illegal URL`）；
   特权页同样不可注入，需要先在普通网页上操作。
 - 原生消息宿主名、Firefox gecko ID 均已随改名更新；旧宿主注册表键由安装脚本自动清理。

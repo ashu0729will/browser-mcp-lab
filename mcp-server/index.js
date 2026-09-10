@@ -380,17 +380,44 @@ const TOOLS = [
   },
   {
     name: "evaluate",
-    description: "Evaluate a JavaScript expression in the page MAIN world",
+    description:
+      "Evaluate a JavaScript expression against the page. Runs in the page's MAIN world so the page's own globals are visible; if the page's CSP forbids eval, it retries in the extension's isolated world and says so in the result.",
     inputSchema: obj(
-      withTab({ expression: { type: "string", description: "JS expression, e.g. document.title" } }),
+      withTab({
+        expression: { type: "string", description: "JS expression, e.g. document.title" },
+        world: {
+          type: "string",
+          enum: ["auto", "main", "isolated"],
+          default: "auto",
+          description:
+            "auto (default) tries the page world, then the isolated world; main requires the page world; isolated never touches it",
+        },
+      }),
       ["expression"],
     ),
     handle: async (args) => {
       const result = await sendToExtension("evaluate", args);
-      return text(
-        typeof result === "string" ? result : JSON.stringify(result, null, 1) ?? "undefined",
-      );
+      // Older builds returned the bare value; newer ones return { value, via }.
+      const payload =
+        result && typeof result === "object" && "via" in result ? result : { value: result, via: "main" };
+      const body =
+        typeof payload.value === "string"
+          ? payload.value
+          : JSON.stringify(payload.value, null, 1) ?? "undefined";
+      if (payload.via !== "isolated") return text(body);
+      const why = payload.mainWorldError ? `the page world failed: ${payload.mainWorldError}` : "the page world was skipped";
+      return text(`${body}\n\n[isolated world — ${why}; the page's own globals are not visible here]`);
     },
+  },
+  {
+    name: "read",
+    description:
+      "Read one element's state without running JavaScript: text, value, checked/disabled, visibility and attributes. Works on pages whose CSP blocks evaluate, which is where it is the way to inspect a page.",
+    inputSchema: obj(
+      withTab({ ref: { type: "string", description: "CSS selector, e.g. #price or a[href]" } }),
+      ["ref"],
+    ),
+    handle: async (args) => text(JSON.stringify(await sendToExtension("read", args), null, 1)),
   },
   {
     name: "screenshot",

@@ -6,7 +6,7 @@
 AI agent
    │  MCP over stdio（JSON-RPC 2.0）
    ▼
-mcp-server/index.js                  MCP 服务器（零依赖，11 个工具）
+mcp-server/index.js                  MCP 服务器（零依赖，12 个工具）
    │  ① native-messaging-host/bridge.js  原生消息通道（首选）
    │  stdio 4 字节 LE 长度帧 ↔ WebSocket
    │  ② ws://127.0.0.1:9777              WebSocket 回退（mcp-server/websocket.js，手写 RFC 6455）
@@ -60,16 +60,22 @@ extension → server : { id, ok: true, result }    成功
 ```
 
 原生消息通道使用同一套 JSON 负载，外层为浏览器规定的 `4 字节小端长度 + UTF-8 JSON` 帧。
+## 4. 工具（12 个）
 
-## 4. 工具（11 个）
-
-`navigate` `snapshot` `click` `type` `press_key` `evaluate` `screenshot` `scroll`
+`navigate` `snapshot` `click` `type` `press_key` `evaluate` `read` `screenshot` `scroll`
 `tabs_list` `tab_select` `wait`
 
 `navigate` 默认立即返回，`waitForLoad: true` 时等待 load。除 `tabs_list` / `tab_select` /
 `wait` 外的工具都接受 `tabId`。服务器声明严格 schema（`additionalProperties: false`），
 并在 `tools/list` 中如实列出全部参数：`navigate.waitForLoad`、`click.humanMode`、
-`click.force`、`type.humanMode`、`type.clear`、`screenshot.tabId`、`snapshot.max`。
+`click.force`、`type.humanMode`、`type.clear`、`screenshot.tabId`、`snapshot.max`、
+`evaluate.world`。
+
+`evaluate` 在页面 MAIN world 求值（`world: auto` 默认；被 CSP 拦时会改试扩展隔离世界并说明，
+`world: main` / `isolated` 可强制）。求值只能靠 `Function`，因此被 CSP 禁止 eval 的页面无法求值——
+这类页面上用 `read` 读取元素状态（文本 / 值 / 选中态 / 可见性 / 属性），它是固定注入、不需要 eval。
+被拦时 `evaluate` 会明确报错并指向这些替代路径，绝不把「没跑成」当成「结果是 null」
+（Chromium 会把被拦的注入解析成 `null`，扩展用哨兵包装识别）。
 文件上传未提供专用工具，可用 `evaluate` + `DataTransfer` 实现。
 
 ### 4.1 事件保真度

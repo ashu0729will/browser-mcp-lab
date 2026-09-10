@@ -9,6 +9,9 @@ const NATIVE_CONNECT_TIMEOUT_MS = 2000;
 const PROBE_TIMEOUT_MS = 3000;
 const RECONNECT_DELAY_MS = 3000;
 const HEALTH_ALARM = "transport-health";
+// A page CSP that forbids eval surfaces with one of these wordings; the extension's
+// own world is not subject to the page's CSP, so `evaluate` can retry there.
+const CSP_BLOCK = /blocked by CSP|unsafe-eval|Content Security Policy|EvalError/i;
 
 let ws = null;
 let nmPort = null;
@@ -743,9 +746,54 @@ function pagePressKey(key) {
 
 function pageEvaluate(expression) {
   // Runs in the page MAIN world: full access to the page's own globals.
-  // eslint-disable-next-line no-new-func
-  return Function('"use strict"; return (' + expression + ")")();
+  // The result is wrapped so the caller can tell "the expression evaluated to
+  // null" apart from "the injection never ran" — Chromium resolves a blocked
+  // MAIN-world injection with a bare `null` instead of an error, and reporting
+  // that as a value would be a silent lie.
+  try {
+    // eslint-disable-next-line no-new-func
+    return { ok: true, value: Function('"use strict"; return (' + expression + ")")() };
+  } catch (error) {
+    return { ok: false, reason: String((error && error.message) || error) };
+  }
 }
+
+// Declarative page reader: a fixed function, so it never needs eval and therefore
+// still works on pages whose CSP blocks it.
+function pageRead(ref) {
+  function find(selector) {
+    let el = document.querySelector(selector);
+    if (el) return el;
+    for (const frame of document.querySelectorAll("iframe")) {
+      try {
+        el = frame.contentDocument?.querySelector(selector);
+        if (el) return el;
+      } catch {
+        /* cross-origin frame */
+      }
+    }
+    return null;
+  }
+
+  const el = find(ref);
+  if (!el) return { found: false, ref };
+  const rect = el.getBoundingClientRect();
+  const attributes = {};
+  for (const attr of el.attributes) attributes[attr.name] = String(attr.value).slice(0, 200);
+  const raw = el.innerText || el.textContent || "";
+  return {
+    found: true,
+    ref,
+    tag: el.tagName.toLowerCase(),
+    text: String(raw).trim().replace(/\s+/g, " ").slice(0, 500),
+    value: "value" in el ? String(el.value).slice(0, 500) : null,
+    checked: "checked" in el ? Boolean(el.checked) : null,
+    disabled: "disabled" in el ? Boolean(el.disabled) : null,
+    visible: rect.width > 0 && rect.height > 0,
+    attributes,
+  };
+}
+
 
 function pageScroll(x, y) {
   if (typeof x !== "number" && typeof y !== "number") {
@@ -1007,12 +1055,50 @@ async function execute(tool, params) {
     case "evaluate": {
       if (typeof params.expression !== "string") throw new Error("evaluate requires expression");
       const tab = await resolveTab(params);
-      return await runInPage(
-        tab.id,
-        pageEvaluate,
-        [params.expression],
-        { world: "MAIN" },
-      );
+      const mode = params.world === "main" || params.world === "isolated" ? params.world : "auto";
+
+      // pageEvaluate wraps its answer: the wrapper is also how we detect that the
+      // injection never ran, which Chromium reports as a bare `null`.
+      const attempt = async (world) => {
+        const env = world ? { world: "MAIN" } : {};
+        const raw = await runInPage(tab.id, pageEvaluate, [params.expression], env);
+        if (!raw || typeof raw !== "object" || typeof raw.ok !== "boolean") {
+          return { blocked: true, reason: "the injected function did not run (page CSP)" };
+        }
+        if (raw.ok) return { value: raw.value };
+        return { blocked: CSP_BLOCK.test(String(raw.reason)), reason: String(raw.reason) };
+      };
+
+      if (mode !== "isolated") {
+        const primary = await attempt("main");
+        if (!primary.blocked) return { value: primary.value, via: "main" };
+        if (mode === "main") {
+          throw new Error(
+            `evaluate cannot run in this page (${primary.reason}). The page blocks eval, so use snapshot or read to inspect it, or click/type/press_key to act on it.`,
+          );
+        }
+        const fallback = await attempt(null);
+        if (!fallback.blocked) return { value: fallback.value, via: "isolated", mainWorldError: primary.reason };
+        throw new Error(
+          `evaluate cannot run in this page: the page world failed (${primary.reason}) and the isolated world too (${fallback.reason}). ` +
+            `The page blocks eval; use snapshot or read to inspect it, or click/type/press_key to act on it.`,
+        );
+      }
+
+      const isolated = await attempt(null);
+      if (isolated.blocked) {
+        throw new Error(
+          `evaluate cannot run in this page (${isolated.reason}). The page blocks eval; use snapshot or read instead.`,
+        );
+      }
+      return { value: isolated.value, via: "isolated" };
+    }
+    case "read": {
+      if (!params.ref) throw new Error("read requires ref");
+      const tab = await resolveTab(params);
+      const result = await runInPage(tab.id, pageRead, [params.ref]);
+      if (!result?.found) throw new Error(`No element matches: ${params.ref}`);
+      return result;
     }
     case "screenshot": {
       const tab = await resolveTab(params);

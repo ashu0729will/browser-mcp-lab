@@ -93,7 +93,7 @@ try {
   }
 
   const byName = new Map((tools.result?.tools ?? []).map((t) => [t.name, t]));
-  check("tools/list exposes 11 tools", byName.size === 11, `got ${byName.size}`);
+  check("tools/list exposes 12 tools", byName.size === 12, `got ${byName.size}`);
 
   const props = (name) => byName.get(name)?.inputSchema?.properties ?? {};
   check("navigate schema documents waitForLoad", props("navigate").waitForLoad?.type === "boolean");
@@ -106,10 +106,26 @@ try {
   );
   check("screenshot schema accepts tabId", props("screenshot").tabId?.type === "integer");
   check(
+    "evaluate schema documents the world modes",
+    props("evaluate").world?.enum?.join(",") === "auto,main,isolated" && props("evaluate").world?.default === "auto",
+  );
+  check("read schema requires a ref", props("read").ref?.type === "string" && byName.get("read").inputSchema.required.includes("ref"));
+  const read = JSON.parse(await call("read", { ref: "#price" }));
+  check("read returns element state from the extension", read.found === true && read.value === "v", JSON.stringify(read));
+  check(
     "page tools keep strict schemas",
     ["navigate", "snapshot", "click", "type", "screenshot", "evaluate"].every(
       (name) => byName.get(name)?.inputSchema?.additionalProperties === false,
     ),
+  );
+
+  const evaluated = await call("evaluate", { expression: "1 + 1" });
+  check("evaluate passes a plain value through", evaluated === "echo:1 + 1", evaluated);
+  const isolated = await call("evaluate", { expression: "1 + 1", world: "isolated" });
+  check(
+    "evaluate flags the isolated-world path",
+    isolated.startsWith("echo:1 + 1") && isolated.includes("isolated world"),
+    isolated.replace(/\n/g, " ").slice(0, 90),
   );
 
   const nav = await call("navigate", { url: "https://fake.example/" });

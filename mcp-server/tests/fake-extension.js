@@ -53,6 +53,16 @@ ws.addEventListener("message", (ev) => {
     case "click":
       reply(msg.id, { clicked: p.ref });
       break;
+    case "evaluate":
+      // Mirrors the real extension's contract: { value, via "main" | "isolated" }.
+      reply(msg.id, {
+        value: `echo:${p.expression}`,
+        via: p.world === "isolated" ? "isolated" : "main",
+      });
+      break;
+    case "read":
+      reply(msg.id, { found: true, ref: p.ref, tag: "input", text: "", value: "v", attributes: {} });
+      break;
     default:
       reply(msg.id, { done: true, tool: msg.tool, params: p });
   }

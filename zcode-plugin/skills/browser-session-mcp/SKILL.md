@@ -5,7 +5,7 @@ description: Drive the user's real browser session through the browser-session-m
 
 # Browser Session MCP — 浏览器自动化指南
 
-MCP 服务器（`mcp-server/index.js`，零依赖）暴露 11 个工具，直接操控当前浏览器会话并复用登录态。
+MCP 服务器（`mcp-server/index.js`，零依赖）暴露 12 个工具，直接操控当前浏览器会话并复用登录态。
 
 ## 核心循环
 
@@ -28,7 +28,8 @@ DOM 变化或页面重载后失效，重新 `snapshot` 即可。
 | 点击 | `click`（`humanMode: false` 关闭虚拟光标；`force: true` 越过客户端 `disabled`） |
 | 输入 | `type`（`clear` 默认 true；`humanMode` 同 `click`；优先走浏览器原生编辑管线） |
 | 按键 | `press_key`（合成事件，见限制 1） |
-| 页面内 JS | `evaluate`（MAIN world） |
+| 页面内 JS | `evaluate`（MAIN world；`world: auto` 默认会在被 CSP 拦时改试隔离世界） |
+| 读取元素状态 | `read`（不执行 JS：文本 / 值 / 选中态 / 可见性 / 属性） |
 | 截图 | `screenshot`（PNG 落盘 `./screenshots/`，可用 `tabId` 指定标签页） |
 | 滚动 | `scroll`（`x` / `y`） |
 | 多标签页 | `tabs_list` / `tab_select` |
@@ -54,8 +55,8 @@ DOM 变化或页面重载后失效，重新 `snapshot` 即可。
    （测试页在 `test-pages/`）。
 5. **浏览器自身 UI 够不到**（保存密码、扩展批准框等）；**附加组件商店域名被浏览器禁止注入**
    （Firefox 的 `addons.mozilla.org`、Chrome 的 Web Store），这些页面会报 `Missing host permission for the tab`。
-6. **严格 CSP 的站点会让 `evaluate` 失败**（`call to Function() blocked by CSP`，例如 chatgpt.com）：
-   改用 `snapshot` + `click` / `type` / `press_key`，这些工具不受页面 CSP 影响。
+6. **严格 CSP 的站点会让 `evaluate` 失败**（两个世界都被拦：页面的 CSP 与扩展自身的 MV3 CSP）：
+   报错会说明原因，改用 `read`（读元素状态，不执行 JS）、`snapshot`，或用 `click` / `type` / `press_key` 操作。
 7. **纯客户端 `disabled` 门槛**用 `click(ref, {force: true})` 越过，服务端校验照旧生效。
 
 ## 故障排查

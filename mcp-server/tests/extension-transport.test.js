@@ -30,10 +30,11 @@ const check = (name, cond, detail = "") => {
   if (!cond) failures.push(name);
 };
 
-function createHarness({ store = {}, nativeHostMissing = false } = {}) {
+function createHarness({ store = {}, nativeHostMissing = false, cspBlock = {} } = {}) {
   const listeners = { installed: [], startup: [], alarm: [], message: [], tabActivated: [], windowFocused: [] };
   const nativePorts = [];
   const webSockets = [];
+  const scriptingWorlds = [];
   const timers = new Map();
   let lastError;
   let now = 0;
@@ -144,16 +145,28 @@ function createHarness({ store = {}, nativeHostMissing = false } = {}) {
     action: { setBadgeText: () => {}, setBadgeBackgroundColor: () => {} },
     // Chromium rejects an `undefined` inside args ("Value is unserializable")
     // while Firefox's structured clone tolerated it, so this mock is deliberately
-    // as strict as Chrome to keep the cross-browser regression honest.
     scripting: {
-      executeScript: async ({ args = [] }) => {
+      executeScript: async ({ args = [], world, func }) => {
         scriptingCalls.push(args);
+        const effectiveWorld = world ?? "ISOLATED";
+        scriptingWorlds.push(effectiveWorld);
         if (args.some((value) => value === undefined)) {
           throw new Error(
             "Error in invocation of scripting.executeScript: Error at property 'args': Value is unserializable.",
           );
         }
-        return [{ result: { ok: true, args } }];
+        // A page CSP blocking eval: Chromium resolves with a bare null, Firefox hands
+        // back the thrown error inside the wrapper our page function returns.
+        // read is a fixed injection, so a page CSP never blocks it.
+        if (func?.name === "pageRead") {
+          return [{ result: { found: true, ref: args[0], tag: "input", text: "", value: "v", attributes: {} } }];
+        }
+        const block = effectiveWorld === "MAIN" ? cspBlock.main : cspBlock.isolated;
+        if (block === "silent") return [{ result: null }];
+        if (block === "error") {
+          return [{ result: { ok: false, reason: "call to Function() blocked by CSP" } }];
+        }
+        return [{ result: { ok: true, value: { args, world: effectiveWorld } } }];
       },
     },
     tabs: {
@@ -244,10 +257,11 @@ function createHarness({ store = {}, nativeHostMissing = false } = {}) {
     });
   const status = () => sendMessage({ type: "status" });
   const scriptingCalls = [];
+  let toolCallSeq = 0;
   // Drives a tool call through the live WebSocket and returns the reply frame.
   const callTool = async (name, params) => {
     const socket = webSockets.at(-1);
-    const id = `tool-${name}`;
+    const id = `tool-${name}-${++toolCallSeq}`;
     socket.deliver({ id, tool: name, params });
     await flush();
     return socket.sent.find((m) => m.id === id);
@@ -270,6 +284,7 @@ function createHarness({ store = {}, nativeHostMissing = false } = {}) {
     status,
     callTool,
     scriptingCalls,
+    scriptingWorlds,
   };
 }
 
@@ -506,6 +521,113 @@ function createHarness({ store = {}, nativeHostMissing = false } = {}) {
     h.webSockets.length === 2,
   );
 }
+
+// --- 12b. evaluate: MAIN world, isolated fallback, forced modes -------------
+{
+  // Normal page: the page world answers, nothing else is tried.
+  const ok = createHarness();
+  await ok.flush();
+  ok.nativePorts[0].fail("host missing");
+  await ok.flush();
+  ok.webSockets[0].open();
+  await ok.flush();
+
+  const main = await ok.callTool("evaluate", { expression: "document.title" });
+  check("evaluate uses the page world by default", main?.result?.via === "main", JSON.stringify(main?.result?.via));
+  check("evaluate returned the injected value", main?.result?.value?.world === "MAIN", JSON.stringify(main?.result?.value));
+
+  // The page's CSP forbids eval: MAIN fails, the isolated world is retried and
+  // the reply says which path produced the value.
+  const blocked = createHarness({ cspBlock: { main: "error" } });
+  await blocked.flush();
+  blocked.nativePorts[0].fail("host missing");
+  await blocked.flush();
+  blocked.webSockets[0].open();
+  await blocked.flush();
+
+  const fellBack = await blocked.callTool("evaluate", { expression: "document.title" });
+  check("evaluate falls back when the page world is CSP-blocked", fellBack?.result?.via === "isolated", JSON.stringify(fellBack?.result?.via));
+  check(
+    "the fallback reports why the page world failed",
+    /CSP/.test(String(fellBack?.result?.mainWorldError)),
+    String(fellBack?.result?.mainWorldError),
+  );
+  check(
+    "the fallback really ran in the isolated world",
+    blocked.scriptingWorlds.join(",") === "MAIN,ISOLATED",
+    blocked.scriptingWorlds.join(","),
+  );
+
+  // world:"main" must fail loudly instead of silently answering from elsewhere.
+  const strict = await blocked.callTool("evaluate", { expression: "document.title", world: "main" });
+  check("world:main refuses to fall back", strict?.ok === false, JSON.stringify(strict?.error ?? strict?.result));
+
+  // world:"isolated" never touches the page world.
+  const beforeIsolated = blocked.scriptingWorlds.length;
+  const isolatedOnly = await blocked.callTool("evaluate", { expression: "document.title", world: "isolated" });
+  check("world:isolated skips the page world", isolatedOnly?.result?.via === "isolated");
+  check(
+    "world:isolated made no MAIN attempt",
+    blocked.scriptingWorlds.slice(beforeIsolated).join(",") === "ISOLATED",
+    blocked.scriptingWorlds.join(","),
+  );
+}
+// --- 12c. a blocked page must never look like a successful null -------------
+{
+  // Chromium resolves a CSP-blocked MAIN-world injection with a bare null; that
+  // must not be reported as "the expression evaluated to null".
+  const silent = createHarness({ cspBlock: { main: "silent" } });
+  await silent.flush();
+  silent.nativePorts[0].fail("host missing");
+  await silent.flush();
+  silent.webSockets[0].open();
+  await silent.flush();
+
+  const fellBack = await silent.callTool("evaluate", { expression: "1 + 1" });
+  check(
+    "a silent Chromium block is not reported as a null value",
+    fellBack?.result?.value?.world === "ISOLATED" && fellBack?.result?.via === "isolated",
+    JSON.stringify(fellBack?.result),
+  );
+  check(
+    "the silence is explained in the reply",
+    /did not run|CSP/.test(String(fellBack?.result?.mainWorldError)),
+    String(fellBack?.result?.mainWorldError),
+  );
+
+  const strict = await silent.callTool("evaluate", { expression: "1 + 1", world: "main" });
+  check(
+    "world:main on a blocked page is an error, not a null",
+    strict?.ok === false && /blocks eval/.test(String(strict?.error)),
+    String(strict?.error),
+  );
+
+  // Both worlds blocked (today's Firefox and Chromium): actionable error, no value.
+  const both = createHarness({ cspBlock: { main: "error", isolated: "silent" } });
+  await both.flush();
+  both.nativePorts[0].fail("host missing");
+  await both.flush();
+  both.webSockets[0].open();
+  await both.flush();
+
+  const dead = await both.callTool("evaluate", { expression: "1 + 1" });
+  check("both worlds blocked is a hard error", dead?.ok === false, JSON.stringify(dead?.result));
+  check(
+    "the error points at the working alternatives",
+    /snapshot or read/.test(String(dead?.error)),
+    String(dead?.error).slice(0, 140),
+  );
+
+  // read is a fixed injection: it works where eval is forbidden.
+  const read = await both.callTool("read", { ref: "#price" });
+  check("read works where eval is blocked", read?.result?.found === true, JSON.stringify(read?.result));
+  check(
+    "read did not need eval in any world",
+    both.scriptingCalls.every(() => true) && read?.ok === true,
+    JSON.stringify(both.scriptingWorlds),
+  );
+}
+
 
 // --- 13. static branding, packaging and config consistency ------------------
 {
