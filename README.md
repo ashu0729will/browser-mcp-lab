@@ -31,6 +31,7 @@ browser-extension/                   MV3 扩展（Chrome / Edge / Firefox）
 | `test-pages/` | 本地测试页面（含事件保真度页 `event-trust.html`） |
 | `zcode-plugin/` | ZCode 插件：浏览器自动化技能 |
 | `docs/ARCHITECTURE.md` | 架构、协议、里程碑 |
+| `CONTRIBUTING.md` | 开发与贡献指南：验证命令、真机验证、约定 |
 
 ## 安装
 
@@ -90,7 +91,7 @@ Chromium 系需把扩展 ID 写入 `native-messaging-host/chrome-extension-id.tx
 - 弹窗里改端口对**两条通道**都生效：扩展通过 `configure` 控制帧让桥进程切换下游端口
 - 原生宿主**不存在**（未注册 / 启动失败）时立即回退 WebSocket，不等 30s 定时器
 - 原生宿主存在但其 MCP 服务器尚未就绪时，扩展保留原生端口并先用 WebSocket；
-  原生通道一旦回帧就**自动晋升为主通道**并关掉 WebSocket（所以「先开浏览器、后起 agent 服务器」
+  原生通道一旦回帧就**自动晋升为主通道**并关掉 WebSocket（所以「先开浏览器、后起本地服务器」
   也会落到原生通道）
 - 用户在标签页/窗口间操作时会触发一次重连检查（MV3 的定时器会随 worker 挂起丢失，
   alarms 最小周期在 Firefox 上被抬到 1 分钟）

@@ -70,7 +70,7 @@ try {
   });
   console.log("initialized; waiting for the Firefox extension to connect (alarms, up to ~70s)...");
 
-  // Real agent flow: navigate first (also moves off privileged pages), then snapshot.
+  // Typical call order: navigate first (also moves off privileged pages), then snapshot.
   let nav = null;
   for (let attempt = 1; attempt <= 12; attempt++) {
     try {
