@@ -1,0 +1,8 @@
+{
+  "name": "browser-session-mcp-native-host",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  }
+}

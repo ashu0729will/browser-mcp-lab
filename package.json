@@ -1,17 +1,21 @@
 {
-  "name": "browser-mcp-lab",
-  "version": "0.3.2",
+  "name": "browser-session-mcp",
+  "version": "0.3.3",
   "private": true,
-  "description": "自研浏览器自动化闭环：MV3 扩展 + 零依赖 MCP server + 原生消息桥（11 个工具）。",
+  "description": "复用真实浏览器会话的本地自动化闭环：MV3 扩展、零依赖 MCP 服务器和原生消息桥。",
   "type": "commonjs",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
-    "server": "node server/index.js",
-    "test": "node server/test/server.test.js && node server/test/bridge.test.js && node server/test/disconnect.test.js",
-    "test:bridge": "node server/test/bridge.test.js",
-    "install:host": "node native-host/install.js"
+    "start": "node mcp-server/index.js",
+    "server": "node mcp-server/index.js",
+    "test": "node mcp-server/tests/server.test.js && node mcp-server/tests/bridge.test.js && node mcp-server/tests/disconnect.test.js && node mcp-server/tests/extension-transport.test.js",
+    "test:server": "node mcp-server/tests/server.test.js",
+    "test:bridge": "node mcp-server/tests/bridge.test.js",
+    "test:transport": "node mcp-server/tests/extension-transport.test.js",
+    "install:host": "node native-messaging-host/install.js",
+    "install:native-host": "node native-messaging-host/install.js"
   },
   "license": "MIT"
 }

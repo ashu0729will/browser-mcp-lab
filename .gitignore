@@ -1,11 +1,16 @@
-# 依赖
+# Dependencies
 node_modules/
 
-# 工具与会话产物
+# Logs
 *.log
 
-# 本地配置（含扩展连接令牌等敏感信息，绝不入库）
+# Machine-local MCP settings (may contain connection secrets)
 .zcode/
 
-# 本地截图产物
+# Generated screenshots
 screenshots/
+
+# Machine-local native messaging configuration
+native-messaging-host/chrome-extension-id.txt
+native-messaging-host/browser_session_mcp.chrome.json
+native-messaging-host/browser_session_mcp.firefox.json

@@ -1,0 +1,14 @@
+{
+  "name": "browser-session-mcp-server",
+  "version": "0.3.3",
+  "private": true,
+  "description": "Zero-dependency local MCP server for the Browser Session MCP extension.",
+  "type": "module",
+  "bin": {
+    "browser-session-mcp": "index.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT"
+}

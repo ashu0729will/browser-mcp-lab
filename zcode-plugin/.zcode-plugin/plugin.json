@@ -1,0 +1,10 @@
+{
+  "name": "browser-session-mcp",
+  "version": "1.2.0",
+  "description": "Browser automation for ZCode using the user's current signed-in session, a local MV3 extension, and a zero-dependency MCP server.",
+  "author": {
+    "name": "ashu0729will"
+  },
+  "license": "MIT",
+  "skills": "skills"
+}
