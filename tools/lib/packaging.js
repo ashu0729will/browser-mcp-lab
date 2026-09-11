@@ -11,6 +11,12 @@ export function outputDir(root, args = process.argv.slice(2)) {
 }
 
 const forbidden = /(^|\/)(?:.*\.(?:log|zip|pem|key|p12|pfx)|chrome-extension-id\.txt|.*host.*manifest.*\.json|credentials(?:\..*)?|secrets?(?:\..*)?|id_rsa|id_ed25519|node_modules|dist|screenshots)$/i;
+// Packaging must not depend on the developer's checkout line endings: text inputs
+// are normalized to LF so a rebuild matches the delivered archives even on
+// Windows, where core.autocrlf rewrites the working tree to CRLF.
+const TEXT_FILE = /\.(?:js|mjs|cjs|css|html|htm|json|md|txt|svg)$/i;
+const normalize = (name, data) =>
+  TEXT_FILE.test(name) ? Buffer.from(data.toString("utf8").replace(/\r\n/g, "\n"), "utf8") : data;
 
 // Check every component: neither file nor parent directory may be a symlink.
 export function readSafe(root, name) {
@@ -28,7 +34,7 @@ export function readSafe(root, name) {
   }
   const data = fs.readFileSync(current);
   if (/-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{36}/.test(data.toString("utf8"))) throw new Error(`Secret material forbidden: ${name}`);
-  return data;
+  return normalize(name, data);
 }
 
 export function extensionInputs(root) {

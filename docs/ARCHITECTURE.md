@@ -124,7 +124,7 @@ Firefox 临时附加组件修改后无需点击「重载」：断开原生消息
 | `mcp-server/tests/live-smoke.js` | 21 项真机冒烟（非离线）：自起本地测试页，驱动真实浏览器并断言页面确实变化（点击计数、受信任 `InputEvent`、跨 iframe、滚动、截图尺寸） |
 | `mcp-server/tests/connections.test.js` | 1 项（`node:test`）：离线诊断、多客户端选择、来源绑定、替换与恢复 |
 | `mcp-server/tests/doctor.test.js` | 3 项（`node --test`）：`--doctor` 无客户端、扩展 hello 后判定已连接、仅裸连接不误判为扩展，并断言探测始终在时限内结束 |
-| `tools/tests/packaging.test.js` | 6 项（`node --test`）：商店包与源码包内容、排除规则、重建确定性、ZIP CRC/解压校验 |
+| `tools/tests/packaging.test.js` | 7 项（`node --test`）：商店包与源码包内容、排除规则、重建确定性、换行无关性、ZIP CRC/解压校验 |
 
 真机测试：`e2e-firefox.js`、`real-click-test.js`、`real-trust-test.js`、`demo-cursor.js`。
 

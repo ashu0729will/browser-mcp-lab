@@ -150,3 +150,18 @@ test("source contains rebuild inputs/privacy, excludes local material, reproduce
   success(run(rebuilt, "package-extension.js")); success(run(rebuilt, "package-source.js"));
   for (const kind of ["firefox", "chrome", "source"]) assert.deepEqual(archive(rebuilt, kind), archive(root, kind));
 });
+
+test("text inputs are line-ending normalized so a CRLF checkout rebuilds identically", t => {
+  const { root } = fixture(t);
+  success(run(root, "package-extension.js"));
+  const lf = new Map(["chrome", "firefox"].map((kind) => [kind, archive(root, kind)]));
+  // Simulate a Windows clone with core.autocrlf=true rewriting the working tree.
+  for (const name of ["service-worker.js", "popup.html", "popup.js"]) {
+    const file = path.join(root, "browser-extension", name);
+    save(root, `browser-extension/${name}`, fs.readFileSync(file, "utf8").replace(/\n/g, "\r\n"));
+  }
+  success(run(root, "package-extension.js"));
+  for (const kind of ["chrome", "firefox"]) {
+    assert.ok(archive(root, kind).equals(lf.get(kind)), `${kind} archive must not depend on checkout line endings`);
+  }
+});

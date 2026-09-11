@@ -28,7 +28,7 @@
 ## 测试 / Tests
 
 - `npm test` 离线全绿：server 33 / bridge 8 / disconnect 4 / connections 1 /
-  extension-transport 95 / doctor 3 / packaging 6，共 **150** 项通过。
+  extension-transport 95 / doctor 3 / packaging 7，共 **151** 项通过。
 - 覆盖：服务器先启动、浏览器先启动、短暂断开与恢复、用户主动断开不被自动重连覆盖、
   旧连接回调隔离、多浏览器同时接入不误转发。
 - 全部测试设有超时上限，失败不依赖无限等待或人工重试。
