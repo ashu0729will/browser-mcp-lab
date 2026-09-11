@@ -164,8 +164,9 @@ function createHarness({ store = {}, nativeHostMissing = false, cspBlock = {} } 
         const block = effectiveWorld === "MAIN" ? cspBlock.main : cspBlock.isolated;
         if (block === "silent") return [{ result: null }];
         if (block === "error") {
-          return [{ result: { ok: false, reason: "call to Function() blocked by CSP" } }];
+          return [{ result: { ok: false, phase: "compile", name: "EvalError", reason: "call to Function() blocked by CSP" } }];
         }
+        if (func?.name === "pageEvaluate" && cspBlock.real) return [{ result: func(...args) }];
         return [{ result: { ok: true, value: { args, world: effectiveWorld } } }];
       },
     },
@@ -188,6 +189,8 @@ function createHarness({ store = {}, nativeHostMissing = false, cspBlock = {} } 
 
   const sandbox = {
     chrome: chromeMock,
+    navigator: { userAgent: "Fake Firefox/130" },
+    crypto: { randomUUID: () => "persistent-test-client" },
     WebSocket: FakeWebSocket,
     console: { log: () => {}, error: () => {}, warn: () => {} },
     setTimeout: (fn, ms) => {
@@ -341,24 +344,13 @@ function createHarness({ store = {}, nativeHostMissing = false, cspBlock = {} } 
   check("handshake pending before the timeout", h.webSockets.length === 0);
   await h.advance(2500);
   check("silent native host times out into the WebSocket fallback", h.webSockets.length === 1);
-  check(
-    "native port is kept alive for a later promotion",
-    h.nativePorts[0].disconnected === false,
-    String(h.nativePorts[0].disconnected),
-  );
+  check("native closes before fallback", h.nativePorts[0].disconnected === true);
   h.webSockets[0].open();
-  await h.flush();
-  check("status reports the WebSocket while native is silent", (await h.status()).transport === "websocket");
-
-  // The host answers only now (its MCP server came up late): the native channel
-  // must take over and the WebSocket must be dropped, without duplicating it.
   h.nativePorts[0].emit({ type: "pong" });
   await h.flush();
-  const promoted = await h.status();
-  check("native channel is promoted once it answers", promoted.transport === "native", String(promoted.transport));
-  check("WebSocket is dropped after promotion", h.webSockets[0].readyState === 3);
+  check("late native cannot promote or close WS", (await h.status()).transport === "websocket" && h.webSockets[0].readyState === 1);
   await h.advance(10000);
-  check("promotion does not spawn another WebSocket", h.webSockets.length === 1);
+  check("late native does not spawn another WS", h.webSockets.length === 1);
 }
 
 // --- 4. disconnect closes both transports and persists ----------------------
@@ -583,24 +575,11 @@ function createHarness({ store = {}, nativeHostMissing = false, cspBlock = {} } 
   silent.webSockets[0].open();
   await silent.flush();
 
-  const fellBack = await silent.callTool("evaluate", { expression: "1 + 1" });
-  check(
-    "a silent Chromium block is not reported as a null value",
-    fellBack?.result?.value?.world === "ISOLATED" && fellBack?.result?.via === "isolated",
-    JSON.stringify(fellBack?.result),
-  );
-  check(
-    "the silence is explained in the reply",
-    /did not run|CSP/.test(String(fellBack?.result?.mainWorldError)),
-    String(fellBack?.result?.mainWorldError),
-  );
-
+  const failed = await silent.callTool("evaluate", { expression: "1 + 1" });
+  check("missing envelope is an error with unknown outcome", failed?.ok === false && /outcome unknown/.test(failed.error));
+  check("missing envelope never retries execution", silent.scriptingWorlds.join(",") === "MAIN");
   const strict = await silent.callTool("evaluate", { expression: "1 + 1", world: "main" });
-  check(
-    "world:main on a blocked page is an error, not a null",
-    strict?.ok === false && /blocks eval/.test(String(strict?.error)),
-    String(strict?.error),
-  );
+  check("world:main missing envelope fails", strict?.ok === false);
 
   // Both worlds blocked (today's Firefox and Chromium): actionable error, no value.
   const both = createHarness({ cspBlock: { main: "error", isolated: "silent" } });
@@ -716,6 +695,32 @@ function createHarness({ store = {}, nativeHostMissing = false, cspBlock = {} } 
   walk(ROOT);
   const unique = [...new Set(offenders)];
   check("no stale paths or brand references remain", unique.length === 0, unique.slice(0, 12).join(" | "));
+}
+
+// Real evaluator, not an invented success envelope: ordinary errors never retry.
+{
+  const h = createHarness({ nativeHostMissing: true, cspBlock: { real: true } });
+  await h.flush();
+  h.webSockets[0].open();
+  for (const expression of ["missingVariable", "(() => { throw new Error('boom') })()", "(() => { globalThis.count = (globalThis.count || 0) + 1; throw new EvalError('unsafe-eval') })()", "("]) {
+    const before = h.scriptingWorlds.length;
+    const result = await h.callTool("evaluate", { expression });
+    check(`ordinary evaluate error: ${expression}`, result?.ok === false && /EVALUATE_/.test(result.error));
+    check("error performs exactly one injection", h.scriptingWorlds.length === before + 1);
+  }
+  const count = await h.callTool("evaluate", { expression: "globalThis.count" });
+  check("runtime CSP-like exception does not repeat side effects", count?.result?.value === 1);
+  const undef = await h.callTool("evaluate", { expression: "undefined" });
+  check("genuine undefined remains successful", undef?.ok === true);
+  const hello = h.webSockets[0].sent.find(m => m.type === "hello");
+  check("hello has persistent identity and channel", hello.clientId === h.store.clientId && hello.browser === "Firefox" && hello.transport === "websocket");
+  await h.sendMessage({ type: "disconnect" });
+  const restarted = createHarness({ store: h.store });
+  await restarted.flush();
+  await restarted.fireTabActivated();
+  await restarted.fireWindowFocused();
+  await restarted.fireAlarm();
+  check("worker restart preserves user Disconnect and identity", restarted.nativePorts.length === 0 && restarted.webSockets.length === 0 && (await restarted.status()).clientId === hello.clientId);
 }
 
 if (failures.length) {

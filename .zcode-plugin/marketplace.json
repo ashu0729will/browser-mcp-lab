@@ -3,7 +3,7 @@
   "plugins": [
     {
       "name": "browser-session-mcp",
-      "description": "Drive the user's current browser session through a local MV3 extension and zero-dependency MCP server with 11 automation tools.",
+      "description": "Drive the user's current browser session through a local MV3 extension and zero-dependency MCP server with 14 automation tools.",
       "source": "zcode-plugin"
     }
   ]

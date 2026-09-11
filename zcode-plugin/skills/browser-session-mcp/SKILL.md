@@ -5,7 +5,7 @@ description: Drive the user's real browser session through the browser-session-m
 
 # Browser Session MCP — 浏览器自动化指南
 
-MCP 服务器（`mcp-server/index.js`，零依赖）暴露 12 个工具，直接操控当前浏览器会话并复用登录态。
+MCP 服务器（`mcp-server/index.js`，零依赖）暴露 14 个工具，直接操控当前浏览器会话并复用登录态。
 
 ## 核心循环
 
@@ -19,7 +19,7 @@ DOM 变化或页面重载后失效，重新 `snapshot` 即可。
 
 ## 工具
 
-除 `tabs_list` / `tab_select` / `wait` 外，所有工具都可用 `tabId` 指定标签页（默认当前活动页）。
+除 `tabs_list` / `tab_select` / `wait` / `connection_status` / `browser_select` 外，所有工具都可用 `tabId` 指定标签页（默认当前活动页）。
 
 | 任务 | 工具 |
 |------|------|
@@ -34,6 +34,8 @@ DOM 变化或页面重载后失效，重新 `snapshot` 即可。
 | 滚动 | `scroll`（`x` / `y`） |
 | 多标签页 | `tabs_list` / `tab_select` |
 | 等待 | `wait`（秒，上限 60） |
+| 连接诊断 | `connection_status`（结构化连接状态与 `nextAction`，不访问页面） |
+| 多浏览器 | `browser_select`（多浏览器同时接入时选择目标 clientId） |
 
 ## 连接前提
 

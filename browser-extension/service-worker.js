@@ -17,11 +17,19 @@ let ws = null;
 let nmPort = null;
 let nativeReady = false;
 let disabled = false;
+let userDisabled = null; // In-memory intent wins over an in-flight storage read/write.
 let transportGeneration = 0;
 let startingGeneration = null;
 let nativeConnectTimer = null;
 let reconnectTimer = null;
 let probeState = null;
+let nativeAttempted = false;
+let clientId;
+const browserName = /Firefox\//.test(navigator.userAgent) ? "Firefox" : /Edg\//.test(navigator.userAgent) ? "Edge" : "Chrome/Chromium";
+const identityReady = chrome.storage.local.get(["clientId"]).then(async (st) => {
+  clientId = st.clientId || crypto.randomUUID();
+  if (!st.clientId) await chrome.storage.local.set({ clientId });
+});
 
 // ---------------------------------------------------------------------------
 // transport lifecycle
@@ -35,14 +43,15 @@ async function loadSettings() {
       Number.isInteger(savedPort) && savedPort >= 1 && savedPort <= 65535
         ? savedPort
         : DEFAULT_PORT,
-    disabled: Boolean(st.disabled),
+    disabled: userDisabled ?? Boolean(st.disabled),
   };
 }
 
-function helloFrame() {
+function helloFrame(transport) {
   return {
     type: "hello",
     name: "browser-session-mcp-extension",
+    clientId, browser: browserName, transport,
     version: chrome.runtime.getManifest().version,
   };
 }
@@ -180,10 +189,8 @@ function scheduleReconnect(generation) {
 }
 
 function openWebSocket(port, generation) {
-  // A native port that has not produced its first frame yet does not block the
-  // fallback: it stays open (the bridge is alive, its server is just not up) and
-  // gets promoted later if it ever answers.
-  if (disabled || generation !== transportGeneration || (nmPort && nativeReady)) return;
+  // Strictly one channel: a silent native host is closed before fallback.
+  if (disabled || generation !== transportGeneration || nmPort) return;
   if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
 
   let socket;
@@ -199,7 +206,7 @@ function openWebSocket(port, generation) {
   socket.onopen = () => {
     if (generation !== transportGeneration || ws !== socket || disabled) return;
     updateBadge();
-    sendWebSocket(socket, helloFrame());
+    sendWebSocket(socket, helloFrame("websocket"));
   };
   socket.onmessage = (ev) => {
     if (generation !== transportGeneration || ws !== socket || disabled) return;
@@ -230,9 +237,7 @@ function openWebSocket(port, generation) {
   };
 }
 
-// Replies must survive a transport switch that happens while a tool call is in
-// flight: the work already ran, so deliver over whichever channel is live now
-// (a disconnect or port change bumps the generation and still drops the reply).
+// Replies belong only to the channel on which the request arrived.
 function replyToCaller(generation, kind, source, obj) {
   if (generation !== transportGeneration) return;
   if (kind === "native" && nmPort === source) {
@@ -243,8 +248,6 @@ function replyToCaller(generation, kind, source, obj) {
     sendWebSocket(source, obj);
     return;
   }
-  if (nmPort) postNative(nmPort, obj);
-  else if (ws && ws.readyState === 1) sendWebSocket(ws, obj);
 }
 
 function fallbackToWebSocket(port, generation, localPort, reason) {
@@ -267,17 +270,8 @@ function openNative(port, generation) {
   localPort.onMessage.addListener((msg) => {
     if (generation !== transportGeneration || nmPort !== localPort || disabled) return;
     clearNativeConnectTimer();
-    const promoted = !nativeReady && Boolean(ws);
     nativeReady = true;
     markActivity("native", localPort);
-    if (promoted) {
-      // The host was silent during the handshake, so we were on the WebSocket;
-      // it answered now, so prefer the native channel and drop the socket.
-      // closeWebSocket() clears `ws` first, so the socket's own onclose cannot
-      // schedule a reconnect, and in-flight replies route to the live channel.
-      console.log("[browser-session-mcp] native channel answered — promoting it");
-      closeWebSocket();
-    }
     updateBadge();
     route(msg, (obj) => replyToCaller(generation, "native", localPort, obj));
   });
@@ -287,20 +281,12 @@ function openNative(port, generation) {
   });
 
   nativeConnectTimer = setTimeout(() => {
-    if (!nativeReady) {
-      // The host process exists (no onDisconnect fired) but nothing came back:
-      // its MCP server is not reachable yet. Keep the port open and use the
-      // WebSocket meanwhile — a later frame promotes the native channel.
-      console.log(
-        "[browser-session-mcp] native host silent during handshake — using the WebSocket until it answers",
-      );
-      openWebSocket(port, generation);
-    }
+    if (!nativeReady) fallbackToWebSocket(port, generation, localPort, "handshake timed out");
   }, NATIVE_CONNECT_TIMEOUT_MS);
 
   // The bridge consumes configure locally, then forwards hello/ping to the selected port.
   postNative(localPort, { type: "configure", port });
-  postNative(localPort, helloFrame());
+  postNative(localPort, helloFrame("native"));
   if (!postNative(localPort, { type: "ping" })) {
     fallbackToWebSocket(port, generation, localPort, "failed to write to native host");
   }
@@ -312,6 +298,7 @@ async function startTransport() {
   if (startingGeneration === generation) return;
   startingGeneration = generation;
   try {
+    await identityReady;
     const settings = await loadSettings();
     if (generation !== transportGeneration) return;
     disabled = settings.disabled;
@@ -320,7 +307,11 @@ async function startTransport() {
       return;
     }
     if (nmPort || (ws && (ws.readyState === 0 || ws.readyState === 1))) return;
-    if (!openNative(settings.port, generation)) openWebSocket(settings.port, generation);
+    if (!nativeAttempted) {
+      nativeAttempted = true;
+      if (openNative(settings.port, generation)) return;
+    }
+    openWebSocket(settings.port, generation);
   } finally {
     if (startingGeneration === generation) startingGeneration = null;
   }
@@ -328,7 +319,9 @@ async function startTransport() {
 
 async function handleHealthAlarm(alarm) {
   if (alarm.name !== HEALTH_ALARM) return;
+  const beforeRead = transportGeneration;
   const settings = await loadSettings();
+  if (beforeRead !== transportGeneration) return;
   disabled = settings.disabled;
   if (disabled) {
     if (nmPort || ws) stopTransports();
@@ -382,25 +375,28 @@ chrome.windows.onFocusChanged.addListener(() => void startTransport());
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
     if (msg?.type === "status") {
+      await identityReady;
       const settings = await loadSettings();
-      disabled = settings.disabled;
       const transport = activeTransport();
       sendResponse({
+        browser: browserName, clientId,
         connected: Boolean(transport),
-        connecting: !settings.disabled && transportPhase() === "connecting",
+        connecting: !disabled && transportPhase() === "connecting",
         transport,
         port: settings.port,
-        disabled: settings.disabled,
+        disabled: userDisabled ?? settings.disabled,
       });
     } else if (msg?.type === "connect") {
-      disabled = false;
-      await chrome.storage.local.set({ disabled: false });
       stopTransports();
-      disabled = false;
+      const generation = transportGeneration;
+      userDisabled = disabled = false;
+      nativeAttempted = false;
+      await chrome.storage.local.set({ disabled: false });
+      if (generation !== transportGeneration) return sendResponse({ ok: false });
       await startTransport();
       sendResponse({ ok: true });
     } else if (msg?.type === "disconnect") {
-      disabled = true;
+      userDisabled = disabled = true;
       stopTransports();
       await chrome.storage.local.set({ disabled: true });
       sendResponse({ ok: true });
@@ -745,16 +741,16 @@ function pagePressKey(key) {
 }
 
 function pageEvaluate(expression) {
-  // Runs in the page MAIN world: full access to the page's own globals.
-  // The result is wrapped so the caller can tell "the expression evaluated to
-  // null" apart from "the injection never ran" — Chromium resolves a blocked
-  // MAIN-world injection with a bare `null` instead of an error, and reporting
-  // that as a value would be a silent lie.
+  let compiled;
   try {
-    // eslint-disable-next-line no-new-func
-    return { ok: true, value: Function('"use strict"; return (' + expression + ")")() };
+    compiled = Function('"use strict"; return (' + expression + ")");
   } catch (error) {
-    return { ok: false, reason: String((error && error.message) || error) };
+    return { ok: false, phase: "compile", name: error.name, reason: String(error.message || error) };
+  }
+  try {
+    return { ok: true, value: compiled() };
+  } catch (error) {
+    return { ok: false, phase: "execute", name: error.name, reason: String(error.message || error) };
   }
 }
 
@@ -1063,10 +1059,11 @@ async function execute(tool, params) {
         const env = world ? { world: "MAIN" } : {};
         const raw = await runInPage(tab.id, pageEvaluate, [params.expression], env);
         if (!raw || typeof raw !== "object" || typeof raw.ok !== "boolean") {
-          return { blocked: true, reason: "the injected function did not run (page CSP)" };
+          throw new Error("EVALUATE_INJECTION_FAILED: no result envelope; execution outcome unknown. Do not automatically retry; use snapshot or read.");
         }
         if (raw.ok) return { value: raw.value };
-        return { blocked: CSP_BLOCK.test(String(raw.reason)), reason: String(raw.reason) };
+        if (raw.phase === "compile" && CSP_BLOCK.test(String(raw.reason))) return { blocked: true, reason: String(raw.reason) };
+        throw new Error(`EVALUATE_${raw.phase === "compile" ? "COMPILE" : "RUNTIME"}: ${raw.name || "Error"}: ${raw.reason}`);
       };
 
       if (mode !== "isolated") {

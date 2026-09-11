@@ -6,7 +6,7 @@
 AI agent
    │  MCP over stdio（JSON-RPC 2.0）
    ▼
-mcp-server/index.js                  MCP 服务器（零依赖，12 个工具）
+mcp-server/index.js                  MCP 服务器（零依赖，14 个工具）
    │  ① native-messaging-host/bridge.js  原生消息通道（首选）
    │  stdio 4 字节 LE 长度帧 ↔ WebSocket
    │  ② ws://127.0.0.1:9777              WebSocket 回退（mcp-server/websocket.js，手写 RFC 6455）
@@ -60,10 +60,10 @@ extension → server : { id, ok: true, result }    成功
 ```
 
 原生消息通道使用同一套 JSON 负载，外层为浏览器规定的 `4 字节小端长度 + UTF-8 JSON` 帧。
-## 4. 工具（12 个）
+## 4. 工具（14 个）
 
 `navigate` `snapshot` `click` `type` `press_key` `evaluate` `read` `screenshot` `scroll`
-`tabs_list` `tab_select` `wait`
+`tabs_list` `tab_select` `wait` `connection_status` `browser_select`
 
 `navigate` 默认立即返回，`waitForLoad: true` 时等待 load。除 `tabs_list` / `tab_select` /
 `wait` 外的工具都接受 `tabId`。服务器声明严格 schema（`additionalProperties: false`），
@@ -103,7 +103,7 @@ Firefox 临时附加组件修改后无需点击「重载」：断开原生消息
   扩展的 `configure` 帧始终优先，因此弹窗端口对两条通道都生效。
 - WebSocket 通道仅监听 `127.0.0.1`；端口被占用时明确报错退出，不终止其他进程。
 - 防假死：应用层心跳 + 双向 ping/pong 往返 + 2.5 个周期无活动即清扫半开连接。
-- 浏览器断开后 15s（`BSM_DISCONNECT_GRACE_MS`）自动退出并释放端口。
+- 浏览器断开后是否退出：仅当显式设置 `BSM_EXIT_ON_DISCONNECT` 时，才在 15s（`BSM_DISCONNECT_GRACE_MS`）宽限后自动退出并释放端口；默认保持服务器运行。
 - 环境变量：`BSM_PORT` `BSM_CONNECT_WAIT_MS` `BSM_KEEPALIVE_MS` `BSM_REQUEST_TIMEOUT_MS`
   `BSM_DISCONNECT_GRACE_MS` `BSM_EXIT_ON_DISCONNECT` `BSM_QUIET`（旧 `BML_*` 名称仍被接受），
   以及仅桥使用的 `BSM_WS_URL`。
@@ -117,11 +117,14 @@ Firefox 临时附加组件修改后无需点击「重载」：断开原生消息
 
 | 脚本 | 覆盖 |
 |------|------|
-| `mcp-server/tests/server.test.js` | 28 项：握手、工具枚举、严格 schema、工具调用、参数透传、截图落盘与命名 |
+| `mcp-server/tests/server.test.js` | 33 项：握手、工具枚举、严格 schema、工具调用、参数透传、截图落盘与命名 |
 | `mcp-server/tests/bridge.test.js` | 8 项：请求转发、响应回传、心跳往返、`configure` 端口切换与非法端口 |
 | `mcp-server/tests/disconnect.test.js` | 4 项：断开后宽限期释放端口 |
-| `mcp-server/tests/extension-transport.test.js` | 70 项：在 `node:vm` 里跑真实 service worker，覆盖原生失败即时回退、握手超时后的原生晋升、双通道互斥、断开持久化、冷启动、旧回调隔离、端口校验、`tabs.onActivated` / `windows.onFocusChanged` 唤醒重连，以及品牌/CSP/版本一致性 |
+| `mcp-server/tests/extension-transport.test.js` | 95 项：在 `node:vm` 里跑真实 service worker，覆盖原生失败即时回退、握手超时后的原生晋升、双通道互斥、断开持久化、冷启动、旧回调隔离、端口校验、`tabs.onActivated` / `windows.onFocusChanged` 唤醒重连，以及品牌/CSP/版本一致性 |
 | `mcp-server/tests/live-smoke.js` | 21 项真机冒烟（非离线）：自起本地测试页，驱动真实浏览器并断言页面确实变化（点击计数、受信任 `InputEvent`、跨 iframe、滚动、截图尺寸） |
+| `mcp-server/tests/connections.test.js` | 1 项（`node:test`）：离线诊断、多客户端选择、来源绑定、替换与恢复 |
+| `mcp-server/tests/doctor.test.js` | 3 项（`node --test`）：`--doctor` 无客户端、扩展 hello 后判定已连接、仅裸连接不误判为扩展，并断言探测始终在时限内结束 |
+| `tools/tests/packaging.test.js` | 6 项（`node --test`）：商店包与源码包内容、排除规则、重建确定性、ZIP CRC/解压校验 |
 
 真机测试：`e2e-firefox.js`、`real-click-test.js`、`real-trust-test.js`、`demo-cursor.js`。
 
@@ -141,6 +144,6 @@ Firefox 临时附加组件修改后无需点击「重载」：断开原生消息
 - [x] v0.3.1 原生消息通道作为首选传输
 - [x] v0.3.2 受信任输入；`click.force`；事件保真度实验页
 - [x] v0.3.3 改名 Browser Session MCP、目录规范化、双通道状态统一、schema 与文档对齐
-- [ ] v0.4.0 Chrome / Edge 真机验证；挂起感知重连；`snapshot` 结构化
+- [x] v0.4.0 安装/启动/连接诊断与恢复；客户端内 `connection_status` / `browser_select`；挂起感知重连；发布一致性
 - [ ] v0.5.0 真实按键路径
 - [ ] 商店发布

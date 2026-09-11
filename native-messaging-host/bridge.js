@@ -131,6 +131,7 @@ function connectWs() {
 
   socket.addEventListener("open", () => {
     if (shuttingDown || generation !== wsGeneration || ws !== socket) return;
+    socket.wasOpen = true;
     console.error(`[browser-session-mcp bridge] server connected: ${wsUrl}`);
     flushQueue();
   });
@@ -147,6 +148,9 @@ function connectWs() {
   socket.addEventListener("close", () => {
     if (generation !== wsGeneration || ws !== socket) return;
     ws = null;
+    // Never carry an in-flight action/reply into a new server session.
+    // Let the extension observe disconnect and establish a fresh transport.
+    if (socket.wasOpen) return shutdown(0);
     scheduleReconnect();
   });
   socket.addEventListener("error", () => {

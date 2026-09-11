@@ -4,22 +4,21 @@
 import crypto from "node:crypto";
 
 const url = process.argv[2] ?? "ws://127.0.0.1:9787";
-const ws = new WebSocket(url);
 
 const TINY_PNG =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+let ws = null;
 
 function reply(id, result) {
   ws.send(JSON.stringify({ id, ok: true, result }));
 }
 
-ws.addEventListener("open", () => {
-  ws.send(
-    JSON.stringify({ type: "hello", name: "fake-extension", version: "0.0.0" }),
-  );
-});
+function hello(socket) {
+  socket.send(JSON.stringify({ type: "hello", name: "fake-extension", version: "0.0.0" }));
+}
 
-ws.addEventListener("message", (ev) => {
+function onMessage(ev) {
   let msg;
   try {
     msg = JSON.parse(typeof ev.data === "string" ? ev.data : String(ev.data));
@@ -66,7 +65,46 @@ ws.addEventListener("message", (ev) => {
     default:
       reply(msg.id, { done: true, tool: msg.tool, params: p });
   }
-});
+}
+
+// The server may still be binding its port when a test spawns this process, so a
+// refused or failed connect is retried for a bounded window instead of dying and
+// stalling the test. Once opened, a later close is intentional (disconnect test)
+// and is not reconnected.
+const deadline = Date.now() + 8000;
+let opened = false;
+let retryScheduled = false;
+
+function retry(socket) {
+  if (opened) {
+    socket.close();
+    return;
+  }
+  if (retryScheduled) return;
+  if (Date.now() >= deadline) {
+    console.error("fake-extension: server never accepted the connection");
+    process.exit(2);
+  }
+  retryScheduled = true;
+  setTimeout(() => {
+    retryScheduled = false;
+    connect();
+  }, 100);
+}
+
+function connect() {
+  const socket = new WebSocket(url);
+  ws = socket;
+  socket.addEventListener("open", () => {
+    opened = true;
+    hello(socket);
+  });
+  socket.addEventListener("message", onMessage);
+  socket.addEventListener("error", () => retry(socket));
+  socket.addEventListener("close", () => retry(socket));
+}
+
+connect();
 
 // keep the process alive until killed
 setInterval(() => {}, 1000);

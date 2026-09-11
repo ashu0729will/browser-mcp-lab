@@ -4,21 +4,17 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import fs from "node:fs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SERVER = path.join(HERE, "..", "index.js");
 const PORT = 9777;
-const TAG = "v0.3.0";
-const TITLE = "v0.3.0 — 真人模式：可见鼠标轨迹箭头（human-like cursor）";
-const NOTES = [
-  "自研扩展进入真人模式（human-like mode）：",
-  "",
-  "- **虚拟光标轨迹**：click/type 前注入可见箭头，沿随机三次贝塞尔曲线缓动滑向目标（450-800ms），与 Browser Use 同款观感",
-  "- **React 兼容输入**：原生 value setter + input/change 事件，受控组件表单可用",
-  "- **双向心跳**：扩展 ping / 服务器 pong 往返探活，配合 5s 服务器心跳，解决 Firefox 事件页挂起丢响应",
-  "- **断连端口释放**：浏览器关闭 15s 宽限后 server 自动退出，端口不再被孤儿进程占用",
-  "- **真机测试**：navigate / snapshot / click / 跨 frame type+screenshot 全部 Firefox 实测通过",
-].join("\n");
+const VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+// Release content is version-driven: the tag follows package.json and the body
+// follows RELEASE-NOTES.md, so a stale literal cannot publish the wrong release.
+const TAG = `v${VERSION}`;
+const TITLE = `v${VERSION} — 安装、启动与连接恢复`;
+const NOTES = fs.readFileSync(new URL("../../RELEASE-NOTES.md", import.meta.url), "utf8").trim();
 
 const server = spawn(process.execPath, [SERVER], {
   env: { ...process.env, BSM_PORT: String(PORT), BSM_CONNECT_WAIT_MS: "45000", BSM_QUIET: "1" },
@@ -140,7 +136,7 @@ try {
   // 5. verify
   await new Promise((r) => setTimeout(r, 3500));
   const url = await call("evaluate", { expression: "location.pathname" });
-  check("release page reached", url.includes("/releases/tag/v0.3.0"), url.trim());
+  check("release page reached", url.includes(`/releases/tag/${TAG}`), url.trim());
 } catch (err) {
   check(`unexpected failure: ${err?.message ?? err}`, false);
 } finally {

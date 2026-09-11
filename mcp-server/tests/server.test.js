@@ -7,6 +7,18 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import os from "node:os";
+// Children on Windows can keep their working directory briefly after kill();
+// wait for exit and retry the removal so cleanup is deterministic.
+const exited = (child) =>
+  child.exitCode !== null || child.signalCode !== null
+    ? Promise.resolve()
+    : new Promise((resolve) => child.once("exit", resolve));
+const removeDir = (dir) =>
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "bsm-server-test-"));
+const watchdog = setTimeout(() => { server.kill(); fake.kill(); removeDir(workDir); process.exit(1); }, 15000);
+watchdog.unref();
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SERVER = path.join(HERE, "..", "index.js");
@@ -20,6 +32,7 @@ const check = (name, cond) => {
 };
 
 const server = spawn(process.execPath, [SERVER], {
+  cwd: workDir,
   env: {
     ...process.env,
     BSM_PORT: String(PORT),
@@ -93,7 +106,7 @@ try {
   }
 
   const byName = new Map((tools.result?.tools ?? []).map((t) => [t.name, t]));
-  check("tools/list exposes 12 tools", byName.size === 12, `got ${byName.size}`);
+  check("tools/list exposes 14 tools including connection controls", byName.size === 14 && byName.has("connection_status") && byName.has("browser_select"));
 
   const props = (name) => byName.get(name)?.inputSchema?.properties ?? {};
   check("navigate schema documents waitForLoad", props("navigate").waitForLoad?.type === "boolean");
@@ -121,12 +134,8 @@ try {
 
   const evaluated = await call("evaluate", { expression: "1 + 1" });
   check("evaluate passes a plain value through", evaluated === "echo:1 + 1", evaluated);
-  const isolated = await call("evaluate", { expression: "1 + 1", world: "isolated" });
-  check(
-    "evaluate flags the isolated-world path",
-    isolated.startsWith("echo:1 + 1") && isolated.includes("isolated world"),
-    isolated.replace(/\n/g, " ").slice(0, 90),
-  );
+  const isolated = await rpc("tools/call", { name: "evaluate", arguments: { expression: "1 + 1", world: "isolated" } });
+  check("evaluate flags the isolated-world path", isolated.result?.structuredContent?.via === "isolated");
 
   const nav = await call("navigate", { url: "https://fake.example/" });
   check("navigate reaches fake extension", JSON.parse(nav).url === "https://fake.example/");
@@ -166,8 +175,11 @@ try {
 } catch (err) {
   check(`unexpected failure: ${err?.message ?? err}`, false);
 } finally {
+  clearTimeout(watchdog);
   server.kill();
   fake.kill();
+  await Promise.all([exited(server), exited(fake)]);
+  removeDir(workDir);
 }
 
 if (failures.length) {

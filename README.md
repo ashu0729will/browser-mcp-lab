@@ -1,205 +1,88 @@
 # Browser Session MCP
 
-自研浏览器自动化闭环：自有 MV3 扩展 + 自有零依赖 MCP 服务器 + 自有原生消息宿主。
-AI agent 可直接操控当前浏览器会话并复用登录态，链路不含第三方浏览器自动化组件。
+将当前浏览器会话连接到本地 MCP 客户端的浏览器自动化扩展与服务器。Node.js 22+，无运行时 npm 依赖。0.4.0 的重点是连接可诊断、浏览器目标明确、断开后可恢复。
 
-名称取「浏览器会话」之意：核心能力是接管**用户当前已登录的会话**，
-而早期名字里的 Lab（实验）已不再描述项目性质。
+## 五步开始
 
-## 架构
+1. 在 Firefox / Chrome / Edge 加载 `browser-extension/`（Firefox 选择目录中的 manifest.json）。
+2. 在 PI-Desktop 的 MCP 配置中添加本地 stdio 命令 `node`，参数为仓库中 `mcp-server/index.js` 的**绝对路径**。
+3. 保存配置并重新连接 MCP 服务器，打开扩展弹窗，确认双方端口一致（默认 9777），点击连接。
+4. 调用 **`connection_status`**。无浏览器时按 `nextAction` 操作；多个浏览器时用 **`browser_select`** 明确目标。
+5. 用 `tabs_list` 找到用户指定的标签页，后续操作显式携带 `tabId`。
 
-```
-AI agent
-   │  MCP over stdio（JSON-RPC 2.0）
-   ▼
-mcp-server/index.js                  MCP 服务器（零依赖，12 个工具）
-   │  ① native-messaging-host/bridge.js   原生消息通道（首选）
-   │  ② ws://127.0.0.1:9777               WebSocket 回退（mcp-server/websocket.js）
-   ▼
-browser-extension/                   MV3 扩展（Chrome / Edge / Firefox）
-   ▼
-当前浏览器会话
-```
+**不要在客户端已经管理服务器时再手动运行 `npm start`**，否则两个进程会争用同一个端口。原生消息宿主是可选增强，不是首次使用的前置条件。
 
-## 目录结构
-
-| 路径 | 说明 |
-|------|------|
-| `browser-extension/` | MV3 扩展（`service-worker.js`、popup、图标） |
-| `mcp-server/` | MCP 服务器、WebSocket 实现、`tests/` 自动化测试 |
-| `native-messaging-host/` | 原生消息宿主：桥进程 + 免管理员注册脚本 |
-| `test-pages/` | 本地测试页面（含事件保真度页 `event-trust.html`） |
-| `zcode-plugin/` | ZCode 插件：浏览器自动化技能 |
-| `docs/ARCHITECTURE.md` | 架构、协议、里程碑 |
-| `CONTRIBUTING.md` | 开发与贡献指南：验证命令、真机验证、约定 |
-
-## 安装
-
-**1. 加载扩展**
-
-- Firefox：`about:debugging` → 临时加载附加组件 → `browser-extension/manifest.json`
-- Chrome / Edge：`chrome://extensions` → 加载已解压的扩展程序 → `browser-extension/`
-
-**2. 注册原生消息宿主（可选，推荐）**
-
-```bash
-node native-messaging-host/install.js
-```
-
-Chromium 系需把扩展 ID 写入 `native-messaging-host/chrome-extension-id.txt` 后重新执行一次；
-脚本会校验 ID 格式、把旧版宿主名（`browser_mcp_lab`）的注册表键清理掉，并在缺少有效 ID 时
-跳过 Chrome / Edge 注册、以退出码 2 结束（Firefox 仍然注册成功），不会写出浏览器必然拒绝的宿主清单。
-未注册时扩展自动使用 WebSocket 通道。
-
-**3. 注册 MCP 服务器**
-
-```json
-{
-  "mcp": {
-    "servers": {
-      "browser-session-mcp": {
-        "command": "node",
-        "args": ["<仓库绝对路径>/mcp-server/index.js"]
-      }
-    }
-  }
-}
-```
-
-**4. 连接**：点击扩展图标 → Connect。弹窗会显示实际使用的通道（原生消息 / WebSocket）。
+完整配置和按症状排查见 [INSTALL.md](INSTALL.md)。
 
 ## 工具
 
-| 工具 | 说明 |
-|------|------|
-| `navigate` | 跳转到 URL（`tabId`、`waitForLoad` 可选，默认立即返回） |
-| `snapshot` | 页面标题 / URL / 可交互元素（含 `ref` 选择器）/ 正文摘录；`max` 上限 500，默认 80 |
-| `click` | 点击元素；`humanMode: false` 关闭虚拟光标动画；`force: true` 越过客户端 `disabled` |
-| `type` | 输入文本；`clear: false` 追加；`humanMode: false` 关动画；优先走浏览器原生编辑管线 |
-| `press_key` | 按键（合成事件，见兼容性说明） |
-| `evaluate` | 在页面 MAIN world 执行 JS；`world: auto`（默认）/ `main` / `isolated` |
-| `read` | 不执行 JS，直接读取某个元素的文本 / 值 / 选中态 / 可见性 / 属性（CSP 严格页面上替代 `evaluate`） |
-| `screenshot` | 截图 PNG，落盘 `./screenshots/`；`tabId` 可指定标签页 |
-| `scroll` | 按像素滚动 |
-| `tabs_list` / `tab_select` | 标签页枚举与切换 |
-| `wait` | 等待指定秒数（上限 60） |
+- 连接：`connection_status`、`browser_select`
+- 页面：`navigate`、`snapshot`、`read`、`click`、`type`、`press_key`、`evaluate`、`screenshot`、`scroll`
+- 标签页与等待：`tabs_list`、`tab_select`、`wait`
 
-除 `tabs_list` / `tab_select` / `wait` 外，其余工具都接受 `tabId`；不传则作用于当前活动标签页。
+推荐流程：状态检查 → 选择浏览器 → 确认标签页 → snapshot → 用 ref 操作 → read/snapshot 验证。
 
-## 传输与稳定性
+`read` 用固定函数读取元素文本、值、选中/禁用状态和属性，不需要动态求值。`evaluate` 用于表达式求值，受浏览器和 CSP 限制；不能代替所有读取操作。运行时错误不得自动重执行表达式。点击提交等动作若超时，先检查页面状态，避免重复提交。
 
-- 原生消息通道优先；WebSocket 回退，仅监听 `127.0.0.1`
-- 弹窗里改端口对**两条通道**都生效：扩展通过 `configure` 控制帧让桥进程切换下游端口
-- 原生宿主**不存在**（未注册 / 启动失败）时立即回退 WebSocket，不等 30s 定时器
-- 原生宿主存在但其 MCP 服务器尚未就绪时，扩展保留原生端口并先用 WebSocket；
-  原生通道一旦回帧就**自动晋升为主通道**并关掉 WebSocket（所以「先开浏览器、后起本地服务器」
-  也会落到原生通道）
-- 用户在标签页/窗口间操作时会触发一次重连检查（MV3 的定时器会随 worker 挂起丢失，
-  alarms 最小周期在 Firefox 上被抬到 1 分钟）
-- 同一时刻只维持一条通道；旧连接的回调按世代号丢弃，不会污染新连接
-- 应用层心跳 5s + 双向 ping/pong 往返 + 半开连接清扫（2.5 个周期）
-- 浏览器断开后 15s 释放端口（`BSM_EXIT_ON_DISCONNECT=0` 可关闭）
-- 端口被占用时明确报错，不终止其他进程
-- 弹窗「断开」会同时关闭两条通道并禁止自动重连
+## 连接与故障恢复
 
-环境变量（旧 `BML_*` 名称仍被接受）：
+服务器通过 stdio 与 MCP 客户端通信，通过本机回环 WebSocket 接收扩展或原生桥连接。默认浏览器断开时服务器继续运行。
 
-| 变量 | 默认 | 说明 |
-|------|------|------|
-| `BSM_PORT` | 9777 | WebSocket 监听端口 |
-| `BSM_CONNECT_WAIT_MS` | 3000 | 等待扩展连接的时间 |
-| `BSM_KEEPALIVE_MS` | 5000 | 心跳周期，`0` 关闭心跳与半开清扫 |
-| `BSM_REQUEST_TIMEOUT_MS` | 30000 | 单次工具调用超时 |
-| `BSM_DISCONNECT_GRACE_MS` | 15000 | 断开后的宽限期 |
-| `BSM_EXIT_ON_DISCONNECT` | 开启 | `0` 时断连不退出 |
-| `BSM_QUIET` | 关闭 | `1` 静音日志 |
-| `BSM_WS_URL` | — | 仅原生桥：初始下游地址（弹窗端口仍可覆盖） |
+每个扩展配置有客户端标识。选择浏览器后，新接入的其他浏览器不能静默接管它；已选择浏览器断开时，不会把请求改投另一个浏览器。使用 `connection_status` 检查并明确重新选择。
 
-## 排查
+扩展优先尝试原生消息，失败或握手超时后关闭该通道，再使用 WebSocket；同一扩展不会保留两个活跃通道互相争抢。主动断开会阻止自动重连。标签页激活、窗口聚焦和定时健康检查可触发幂等重连检查。
 
-连接出问题时先跑自检（不启动服务器、不需要浏览器；输出到 stdout，不受 `BSM_QUIET` 影响）：
+### 终端诊断
 
-```bash
+```powershell
 node mcp-server/index.js --doctor
 ```
 
-它逐项回答：`BSM_PORT`（默认 9777）当前是否空闲、Chromium 原生宿主在 Mozilla / Chrome / Edge 下
-是否已注册且 manifest 文件确实存在、`native-messaging-host/chrome-extension-id.txt` 是否有效、
-以及等待窗口内是否真的有客户端连上来（等待时长用 `BSM_DOCTOR_WAIT_MS`，默认 3000，`0` 表示只探测不等待）。
-最后一行 `VERDICT:` 给出结论与下一步：`extension-connected` / `port-busy` / `no-client-yet`。
+doctor 检查端口、原生宿主配置及等待窗口内连接情况。若客户端服务器已在运行，它会看到端口占用；此时应使用该服务器的 `connection_status`，而不是再起一个服务器。
 
-工具调用的连接错误信息现在分两种：**从未有浏览器连接过**（提示打开浏览器、点扩展图标的 Connect），
-与**曾经连接、当前已断开**（附上次断连时间与原因，提示在弹窗里 Disconnect 再 Connect）；两种都会指路 `--doctor`。
+### 环境变量
 
-## 测试
+推荐使用 `BSM_*`；旧 `BML_*` 名称仍兼容，新名称优先。
 
-```bash
-npm test                                        # 全部离线测试（无需浏览器）
-node mcp-server/tests/server.test.js            # 28 项：握手、工具 schema、调用、截图落盘
-node mcp-server/tests/bridge.test.js            # 8 项：桥转发、心跳、configure 端口切换
-node mcp-server/tests/disconnect.test.js        # 4 项：断开后释放端口
-node mcp-server/tests/extension-transport.test.js  # 70 项：扩展传输状态机（mock chrome/WebSocket）
+- `BSM_PORT`：端口，默认 9777。
+- `BSM_CONNECT_WAIT_MS`：网页操作等待连接的上限。
+- `BSM_REQUEST_TIMEOUT_MS`：请求响应超时。
+- `BSM_KEEPALIVE_MS`：健康检查周期。
+- `BSM_EXIT_ON_DISCONNECT`：显式开启时才在宽限期后退出；默认保持服务器运行。
+- `BSM_DISCONNECT_GRACE_MS`：开启断连退出时的宽限期。
+- `BSM_QUIET`：日志静音。
+- `BSM_DOCTOR_WAIT_MS`：doctor 等待客户端的上限。
+- `BSM_WS_URL`：原生桥初始下游地址，扩展配置帧可提供目标端口。
+
+## 已知限制
+
+- 工具出现不代表浏览器已连接；浏览器连接也不代表目标网站允许注入。
+- 浏览器商店等受保护页面不能注入；不要通过放宽浏览器安全设置规避。
+- MAIN world 的动态求值受页面 CSP 限制；隔离世界也受扩展 CSP 限制。请使用 `read` / `snapshot` 等固定操作。
+- 按键是合成事件，不保证触发浏览器默认行为或 `isTrusted` 检查。
+- 输入会优先尝试浏览器编辑管线，失败时可能回退合成事件；以实际返回路径和页面结果为准。
+- 截图是可视区域，不是完整长页面。Chromium 对后台标签截图可能需要激活目标标签。
+- 跨域 iframe、特权页面、文件网址可能受额外限制；DOM 变化后重新获取 ref。
+- 旧扩展不支持 0.4.0 客户端身份时应升级、重载，不要将旧版与新版混用作多浏览器自动化。
+
+## 隐私与审核
+
+页面内容、网址、表单状态、截图或表达式结果会交给本地 MCP 服务器；下游客户端可能进一步发送给云端模型。只连接可信客户端。参见 [PRIVACY.md](PRIVACY.md)。
+
+商店包不是审核通过证明。`<all_urls>`、动态 `evaluate` 和数据处理声明可能需要进一步审核；本机回环通信不等于没有数据传输，也不自动豁免远程代码政策。
+
+## 开发与发布
+
+```powershell
+npm test
+npm run package:store
+npm run package:source
 ```
 
-真机测试（需已加载扩展）：
+构建输出在 `dist/`，不会入库。源码包提供重建说明；商店包的 manifest 位于 ZIP 根目录。详见 [BUILD.md](BUILD.md) 和 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-```bash
-node mcp-server/tests/live-smoke.js             # 真机冒烟：本地测试页 + 断言页面真实变化（建议先跑）
-node mcp-server/tests/e2e-firefox.js
-node mcp-server/tests/real-click-test.js
-node mcp-server/tests/real-trust-test.js        # 以 isTrusted 判定点击事件来源
-node mcp-server/tests/demo-cursor.js
-```
+目录：`browser-extension/` 扩展；`mcp-server/` 服务器和测试；`native-messaging-host/` Windows 原生桥；`tools/` 构建；`test-pages/` 本地测试页；`zcode-plugin/` 可选集成。
 
-`live-smoke.js` 只访问本地测试页（自起 8123 端口），不需要外网，也不需要已登录的站点；
-`SMOKE_KEEP_SCREENSHOT=1` 会保留它截到的 PNG 供人工查看。
-想在全新配置里验证 Chromium（不改动你日常用的浏览器配置）：
-
-```bash
-msedge.exe --user-data-dir=<临时目录> --load-extension=<仓库>/browser-extension \
-           --disable-extensions-except=<仓库>/browser-extension --no-first-run
-```
-
-需要 Node.js 22+（`bridge.js`、测试与 `mcp-server/tests/extension-transport.test.js` 使用内置 `WebSocket`）。
-
-## 兼容性说明
-
-- `type` 在页面 MAIN world 使用 `document.execCommand("insertText")`，由浏览器完成编辑，
-  产出 `isTrusted === true` 的 `InputEvent`；页面拒绝时回退逐字符合成事件，返回值的 `via` 标明路径。
-- `press_key` 只发合成 `KeyboardEvent`。`isTrusted` 是 DOM 规范的 `[LegacyUnforgeable]`，
-  无法伪造，只认真实按键的页面不响应。
-- `click` 的 `force: true` 移除 `disabled` / `aria-disabled` 后点击，仅绕过客户端校验。
-- 截图仅覆盖可视区。Firefox 用 `tabs.captureTab` 直接截目标标签页；Chromium 只能截窗口当前
-  活动标签页，因此会临时激活目标页、截图前后各核验一次活动标签，并在确认未被用户切走后恢复原标签。
-- `about:*` 等特权页不可注入，需先导航到普通网页。
-- `file://` 页面需在扩展详情页开启「允许访问文件网址」。
-- `nth-of-type` 选择器在 DOM 变化后可能失效，重新 `snapshot` 即可。
-- Chromium 系原生通道需手填扩展 ID 才能启用，缺省走 WebSocket。
-- 浏览器**禁止扩展触碰附加组件商店域名**（Firefox 的 `addons.mozilla.org`、Chrome 的 Web Store），
-  这些页面所有工具都会报 `Missing host permission for the tab`——这是浏览器的强制限制，不是缺陷。
-  实测同一轮内普通 https 站点注入正常，而 `addons.mozilla.org` 与 `support.mozilla.org` 都失败，
-- 页面 CSP 会拦 `evaluate`：该工具要在页面里求值，只能靠 `Function`，而严格 CSP 的站点
-  （如 chatgpt.com）禁止 eval。实测两个引擎都是**两个世界都拦**——MAIN world 被页面 CSP 拦，
-  隔离世界被扩展自身的 MV3 CSP 拦——所以 `world: auto` 的隔离回退基本不会生效；
-  拦下时会明确报错（Chromium 会把被拦的注入解析成 `null`，我们靠哨兵包装识别，绝不把
-  「没跑成」当成「结果是 null」），并指向可用的替代路径：`read`（读元素状态，不执行 JS）、
-  `snapshot`、`click` / `type` / `press_key`。
-- `navigate` 不能前往 `about:*` 等特权页（浏览器 API 直接拒绝，报 `Illegal URL`）；
-  特权页同样不可注入，需要先在普通网页上操作。
-- 原生消息宿主名、Firefox gecko ID 均已随改名更新；旧宿主注册表键由安装脚本自动清理。
-
-## 里程碑
-
-- [x] v0.2.0 MCP 服务器 + 扩展 MVP、自有协议、自动化测试
-- [x] v0.2.1 跨浏览器同一份 manifest；Firefox 端到端验证
-- [x] v0.3.0 拟人化虚拟光标；双向心跳；断开释放端口
-- [x] v0.3.1 原生消息通道作为首选传输，WebSocket 回退
-- [x] v0.3.2 受信任输入；`click.force`
-- [x] v0.3.3 改名 Browser Session MCP；目录规范化；双通道状态统一；工具 schema 补全
-- [ ] v0.4.0 Chrome / Edge 真机验证；Firefox 挂起感知重连；`snapshot` 结构化
-- [ ] v0.5.0 真实按键路径（Chrome `chrome.debugger` 或原生宿主 OS 级输入）
-- [ ] 商店发布
-
-## 许可
+仓库地址暂保留为 https://github.com/ashu0729will/browser-mcp-lab ，项目显示名为 Browser Session MCP。
 
 [MIT](LICENSE)

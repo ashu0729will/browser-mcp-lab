@@ -1,64 +1,94 @@
-# 安装说明
+# 安装与连接（0.4.0）
 
-按顺序执行以下步骤即可在本机启用 browser-session-mcp。
+## 先分清两个组件
 
-**1. 克隆仓库**（已存在则跳过）
+- MCP 服务器：由 PI-Desktop 等客户端启动的 Node.js 子进程，使用标准输入输出通信。
+- 浏览器扩展：安装在你希望控制的浏览器中，通过本机端口连接服务器。
 
-```bash
-git clone https://github.com/ashu0729will/browser-mcp-lab.git
-```
+看到 MCP 工具列表只证明服务器已启动，不代表浏览器已经连接。
 
-**2. 加载扩展**（需手动完成）
+## 1. 准备环境
 
-- Firefox：`about:debugging` → 临时加载附加组件 → `<仓库>/browser-extension/manifest.json`
-- Chrome / Edge：`chrome://extensions` → 加载已解压的扩展程序 → `<仓库>/browser-extension/`
+安装 Node.js 22 或更新版本。执行 `node --version` 验证。项目没有运行时 npm 依赖，不需要 `npm install`。
 
-**3.（可选）注册原生消息宿主**
+下载或克隆仓库到固定目录，更新后不要随意移动，否则客户端配置中的路径会失效。
 
-```bash
-node <仓库>/native-messaging-host/install.js
-```
+## 2. 在 PI-Desktop 添加 MCP 服务器
 
-Chromium 系需把扩展 ID 写入 `<仓库>/native-messaging-host/chrome-extension-id.txt` 后重新执行。
-脚本会校验 ID 格式、清理旧的 `browser_mcp_lab` 注册表键；缺少有效 ID 时跳过 Chrome / Edge 注册
-并以退出码 2 结束（Firefox 已注册）。未注册时自动使用 WebSocket 通道。
+在客户端的 MCP 服务器配置入口添加一个 stdio 服务器。不同版本界面位置可能不同；不要把 ZCode 的配置目录当成 PI-Desktop 配置目录。
 
-**4. 注册 MCP 服务器**
+- 名称：`browser-session-mcp`
+- 类型：stdio / 本地命令
+- 命令：`node`（若客户端找不到 Node，填写 `node.exe` 的绝对路径）
+- 参数：`<仓库绝对路径>/mcp-server/index.js`
+- 工作目录（若可设置）：仓库绝对路径
+- 环境变量（可选）：`BSM_PORT=9777`
 
-在 `~/.zcode/cli/config.json` 的 `mcp.servers` 下新增一项（只新增条目，不覆盖已有配置）：
+如果客户端支持标准 `mcpServers` JSON 导入，可合并以下条目。不要覆盖已有服务器；不同客户端的外层 JSON 格式可能不同。
 
 ```json
-"browser-session-mcp": {
-  "command": "node",
-  "args": ["<仓库绝对路径>/mcp-server/index.js"]
+{
+  "mcpServers": {
+    "browser-session-mcp": {
+      "command": "node",
+      "args": ["C:/path/to/browser-session-mcp/mcp-server/index.js"],
+      "env": { "BSM_PORT": "9777" }
+    }
+  }
 }
 ```
 
-服务器零依赖，无需 `npm install`；需要 Node.js 22+。
+把示例路径替换成实际路径，保存后在客户端重新连接该 MCP 服务器。若没有重新连接按钮，重开会话。
 
-**5. 安装技能**
+**不要同时手动运行 `npm start`。** stdio 服务器由客户端管理；再起第二个实例会争用端口。
 
-把 `<仓库>/zcode-plugin/skills/browser-session-mcp` 复制到 `~/.zcode/skills/`。
+## 3. 安装或更新浏览器扩展
 
-**6. 连接并验证**
+- Firefox：在 `about:debugging` 中临时加载 `browser-extension/manifest.json`；商店签名版可正常安装。临时加载通常需在浏览器重启后重新操作。
+- Chrome / Edge：扩展管理页开启开发者模式，加载已解压目录 `browser-extension/`；或安装商店版本。
+- 更新源码后必须重载扩展。磁盘文件变了不代表正在运行的扩展已更新。
+- 打开扩展弹窗，端口设为与 MCP 服务器相同的值，点击连接。
 
-重开会话（MCP 服务器在会话启动时连接），点击浏览器扩展图标 → Connect。
-弹窗会显示实际使用的通道（原生消息 / WebSocket）。
+原生消息宿主是可选组件。先用 WebSocket 回退完成连接，不要把安装宿主作为必经步骤。
 
-验证方式二选一：
+要启用原生通道，在 Windows 上执行：
 
-- 让 MCP 客户端执行 `navigate` 打开 `https://example.com`，再 `snapshot` 读取页面结构；
-- 跑真机冒烟 `node <仓库>/mcp-server/tests/live-smoke.js`（只访问本地测试页，会自起 8123 端口）。
+```powershell
+node native-messaging-host/install.js
+```
 
-**注意事项**
+Chromium 原生通道还需要将实际安装的扩展 ID 写入 `native-messaging-host/chrome-extension-id.txt` 后重跑安装器。商店版 ID 与未打包版可能不同。未配置时仍可使用 WebSocket；安装器退出码 2 表示 Chromium 配置未完成，不表示 Firefox 配置一定失败。
 
-- 不要提交任何密钥或本机配置。
-- 工具未出现时依次检查：扩展弹窗连接状态、config JSON 语法与路径转义、端口 9777 是否被残留进程占用。
-  也可以先跑 `node <仓库>/mcp-server/index.js --doctor`，它会逐项报告端口、原生宿主注册与客户端连接情况。
+## 4. 给模型的最短流程
 
-## 图形界面安装
+1. 调用 `connection_status`，不要先运行网页工具。
+2. 如果没有客户端连接，提示用户加载扩展、确认端口、点击连接；不要反复执行 navigate。
+3. 如果有多个浏览器，通过弹窗中的浏览器名称和客户端 ID 确认目标，再调用 `browser_select`。
+4. 连接明确后调用 `tabs_list`，只选择用户要求操作的标签页，后续页面工具显式传入 `tabId`。
+5. DOM 变化后重新 snapshot，再使用新 ref；不要盲目复用过期选择器。
+6. 提交、发送或付款等有副作用动作超时后，不要自动重复；先核对实际状态。
 
-ZCode：Settings → Plugin Management → Discover → `+` → 添加仓库地址
-`https://github.com/ashu0729will/browser-mcp-lab` → 在卡片上点 Get。
+## 5. 按症状排查
 
-MCP 服务器需按上面第 4 步手动注册（项目未发布 npm 包，插件清单不预置服务器地址）。
+- **工具根本没出现**：检查客户端是否加载了配置、Node 命令是否存在、服务器入口是否是绝对路径；查看客户端的 MCP 启动日志。
+- **工具出现但没有浏览器连接**：调用 `connection_status`，确认扩展已启用且端口一致。默认断开后服务器继续等待，不需要反复重开进程。
+- **连接到多个浏览器**：显式选择目标；不要根据“最后连上的浏览器”推断目标。
+- **端口已占用**：先确认是否已有本客户端实例在运行；不要杀死不明进程。需要不同实例时配置不同端口，并同步修改扩展端口。
+- **Missing host permission**：属于目标网页访问限制，不是连接问题。浏览器商店等受保护页面不允许扩展注入。
+- **CSP / eval 错误**：用固定操作工具 `read`、`snapshot`、`click`、`type` 替代动态 evaluate，不要通过重连或放宽浏览器保护解决。
+
+终端诊断（通常模型不需要执行）：
+
+```powershell
+node mcp-server/index.js --doctor
+```
+
+若客户端已占用端口，doctor 报 port-busy 不一定是故障；此时优先调用已运行服务器的 `connection_status`。doctor 是单独进程，不代表已运行服务器的历史状态。
+
+## 隐私与发布
+
+只连接可信客户端。页面内容和截图会传给本地服务器，下游客户端可能进一步发送到模型服务。详见 [隐私政策](PRIVACY.md)。
+
+仓库： https://github.com/ashu0729will/browser-mcp-lab
+
+开发、打包与测试参见 [CONTRIBUTING.md](CONTRIBUTING.md)。

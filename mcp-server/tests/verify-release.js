@@ -2,10 +2,14 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import fs from "node:fs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SERVER = path.join(HERE, "..", "index.js");
 const PORT = 9777;
+// Version-driven: verify the release that package.json currently describes.
+const VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+const TAG = `v${VERSION}`;
 
 const server = spawn(process.execPath, [SERVER], {
   env: { ...process.env, BSM_PORT: String(PORT), BSM_CONNECT_WAIT_MS: "45000", BSM_QUIET: "1" },
@@ -81,13 +85,13 @@ try {
   }
   if (!connected) throw new Error("extension never connected");
 
-  await call("navigate", { url: "https://github.com/ashu0729will/browser-mcp-lab/releases/tag/v0.3.0" });
+  await call("navigate", { url: `https://github.com/ashu0729will/browser-mcp-lab/releases/tag/${TAG}` });
   await new Promise((r) => setTimeout(r, 2000));
   const snap = JSON.parse(await call("snapshot", {}));
   console.log("title:", snap.title);
   console.log("url:", snap.url);
   console.log("text-excerpt:", snap.text.slice(0, 400));
-  const ok = snap.title.includes("v0.3.0") && (snap.text.includes("真人模式") || snap.url.includes("releases/tag"));
+  const ok = snap.title.includes(TAG) || snap.url.includes(`releases/tag/${TAG}`);
   console.log(ok ? "\nRELEASE-VERIFIED" : "\nVERIFY-CHECK-MANUALLY");
 } catch (err) {
   console.error("VERIFY-FAIL:", err?.message ?? err);

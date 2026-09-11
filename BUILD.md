@@ -1,34 +1,41 @@
 # Building the submitted add-on
 
-The add-on has no compilation step: `browser-extension/` holds the complete,
-readable source of everything in the submitted package.
+Requires Node.js 22 or newer; no dependency installation or compilation.
+From the repository root (or the extracted reviewer source ZIP), run:
 
-Reproduce the submitted archive byte for byte:
-
-```bash
+```sh
 node tools/package-extension.js --out dist
+node tools/package-source.js --out dist
+node --test tools/tests/packaging.test.js
 ```
 
-Requires Node.js 22 or newer. There are no dependencies to install.
+Omitting `--out` uses `dist`; supplying `--out` without a directory is an error.
+The extension command validates both variants before writing either ZIP:
 
-The script copies `browser-extension/` into
-`dist/browser-session-mcp-firefox-<version>.zip` and applies exactly two manifest
-edits for AMO:
+- `browser-session-mcp-firefox-<version>.zip`: removes
+  `background.service_worker`, keeps `background.scripts` and inherits the source
+  `browser_specific_settings.gecko.data_collection_permissions` unchanged.
+  Missing data-collection declarations are errors; the build never invents one.
+- `browser-session-mcp-chrome-<version>.zip`: keeps the service worker, removes
+  `background.scripts` and `browser_specific_settings`.
 
-1. `background.service_worker` is removed — Firefox ignores that key and runs
-   `background.scripts` (the event page) instead.
-2. `browser_specific_settings.gecko.data_collection_permissions` is added with
-   `{"required": ["none"]}`, the declaration AMO requires for new add-ons.
+Both ZIPs have `manifest.json` at their root. Other files are copied verbatim.
+Inputs are the required extension files, explicit manifest resource paths and
+any explicit `browserSessionPackaging.extensionFiles` in root `package.json`
+(use that list for imported modules or HTML assets not named in the manifest).
+Wildcards, traversal, symlinks, secret filenames and recognizable private keys
+or access tokens are rejected. This is a safety check, not a general secret audit.
+Version mismatch, missing files or invalid icon dimensions also fail before any
+ZIP is written; existing outputs are not deleted on validation failure.
 
-The same script also emits the Chromium variant
-(`browser-session-mcp-chrome-<version>.zip`), which keeps `service_worker` and
-drops the Firefox-only keys. Both archives are written deterministically (entries
-sorted, timestamps pinned), so rebuilding from this source produces identical
-bytes — not just equivalent files.
+ZIP entries use locale-independent sorting and the fixed timestamp
+2026-01-01 00:00:00. Rebuild with the same Node.js/zlib version for byte-identical
+compression; source file modification times do not affect output.
 
-Every other file in the archive is copied verbatim, including `service-worker.js`,
-`popup.html`, `popup.js` and the icons.
-
-The companion MCP server that the add-on talks to is a separate program and is
-not part of the add-on; it lives in the same public repository, under
-`mcp-server/` and `native-messaging-host/`.
+`browser-session-mcp-source-<version>.zip` contains the original extension
+inputs, all build tools/tests, root package metadata, BUILD.md, LICENSE and
+PRIVACY.md when present. It excludes repository/private metadata (`.pi`, `.git`),
+local host manifests, extension IDs, logs, dependencies and generated ZIPs.
+The separate MCP server and native host are not needed to rebuild the add-on.
+Tests use `PI_SCRATCH_DIR` or the operating system temporary directory and clean
+up their fixtures. Packaging itself creates no temporary files.

@@ -25,6 +25,7 @@ function render(st) {
   }
 
   statusText.textContent = text;
+  statusText.title = st.clientId ? `${st.browser} · ${st.clientId}` : "";
   if (document.activeElement !== portEl) portEl.value = st.port;
   connectBtn.disabled = !st.disabled && (st.connected || st.connecting);
   disconnectBtn.disabled = st.disabled;

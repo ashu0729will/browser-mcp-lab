@@ -22,6 +22,13 @@ const DOS_TIME = 0;
 const DOS_DATE = ((2026 - 1980) << 9) | (1 << 5) | 1;
 
 export function zip(entries) {
+  entries = [...entries].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  const names = new Set();
+  for (const { name, data } of entries) {
+    if (typeof name !== "string" || !name || /[\\\\:]/.test(name) || name.split("/").some(p => !p || p === "." || p === "..") || names.has(name)) throw new Error(`Unsafe or duplicate ZIP path: ${name}`);
+    if (!Buffer.isBuffer(data)) throw new Error(`ZIP data must be a Buffer: ${name}`);
+    names.add(name);
+  }
   const locals = [];
   const central = [];
   let offset = 0;

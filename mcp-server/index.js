@@ -11,7 +11,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createWsServer, isPortInUse } from "./websocket.js";
 
-const VERSION = "0.3.3";
+const VERSION = JSON.parse(fs.readFileSync(new URL("./package.json", import.meta.url), "utf8")).version;
 
 if (process.argv.includes("--version") || process.argv.includes("-v")) {
   console.log(`browser-session-mcp ${VERSION}`);
@@ -65,8 +65,9 @@ const KEEPALIVE_MS = intEnv("BSM_KEEPALIVE_MS", "BML_KEEPALIVE_MS", 5000);
 // Fast heartbeats keep Firefox's event page awake while requests are pending.
 const REQUEST_TIMEOUT_MS = intEnv("BSM_REQUEST_TIMEOUT_MS", "BML_REQUEST_TIMEOUT_MS", 30000);
 const QUIET = boolEnv("BSM_QUIET", "BML_QUIET", false);
-const EXIT_ON_DISCONNECT = boolEnv("BSM_EXIT_ON_DISCONNECT", "BML_EXIT_ON_DISCONNECT", true);
+const EXIT_ON_DISCONNECT = boolEnv("BSM_EXIT_ON_DISCONNECT", "BML_EXIT_ON_DISCONNECT", false);
 const DISCONNECT_GRACE_MS = intEnv("BSM_DISCONNECT_GRACE_MS", "BML_DISCONNECT_GRACE_MS", 15000);
+const DOCTOR_WAIT_MS = intEnv("BSM_DOCTOR_WAIT_MS", undefined, 3000);
 
 const log = (...parts) => {
   if (!QUIET) console.error(`[browser-session-mcp] ${parts.join(" ")}`);
@@ -90,8 +91,30 @@ if (process.argv.includes("--doctor")) {
 // Extension connection management
 // ---------------------------------------------------------------------------
 
-let conn = null; // current WsConnection from our extension
-const pending = new Map(); // request id -> {resolve, reject, timer}
+let selectedClientId = null;
+const clients = new Map();
+const pending = new Map();
+
+function connectionStatus() {
+  const online = [...clients.values()].filter((c) => c.source.open);
+  const selected = clients.get(selectedClientId);
+  const state = selected?.source.open ? "connected" : selectedClientId ? "selected_disconnected" : online.length ? "selection_required" : "disconnected";
+  const connectHint = `Open ${selectedClientId ? "the selected browser" : "your browser"}, click Browser Session MCP and press Connect (port ${PORT}); then call connection_status. Do not retry page tools until connected.`;
+  const nextAction = state === "connected" ? "Call tabs_list, then use its tabId for page tools."
+    : state === "selection_required" ? "Call browser_select with the intended clientId from clients. Upgrade legacy extensions for persistent identity."
+    : state === "selected_disconnected" && online.length ? `The selected browser (${selectedClientId}) is disconnected. Call browser_select with the intended clientId from clients, or ${connectHint}`
+    : connectHint;
+  return { state, clients: online.map(({ source, ...info }) => info), selectedClientId, nextAction };
+}
+
+function rejectSource(source, code) {
+  for (const [id, entry] of pending) {
+    if (entry.source !== source) continue;
+    clearTimeout(entry.timer);
+    pending.delete(id);
+    entry.reject(new Error(`${code}: action may already have executed; do not automatically retry.`));
+  }
+}
 
 let disconnectTimer = null;
 
@@ -106,46 +129,41 @@ const history = {
 };
 
 function adoptConnection(next) {
-  if (conn && conn !== next) {
-    log("replacing existing extension connection");
-    try {
-      conn.close(1001);
-    } catch {
-      /* already gone */
-    }
-  }
-  if (disconnectTimer) {
-    clearTimeout(disconnectTimer);
-    disconnectTimer = null;
-    log("browser came back; port-release timer cancelled");
-  }
-  conn = next;
-  history.everConnected = true;
-  history.connections += 1;
-  history.lastConnectedAt = new Date().toISOString();
+  const helloTimer = setTimeout(() => next.close(1008), 5000);
+  helloTimer.unref?.();
   next.onmessage = (text) => handleExtensionMessage(next, text);
   next.onclose = () => {
-    if (conn !== next) return; // stale socket already superseded
-    conn = null;
+    clearTimeout(helloTimer);
+    rejectSource(next, "BROWSER_DISCONNECTED");
+    if (!next.clientId || clients.get(next.clientId)?.source !== next) return;
+    clients.delete(next.clientId);
     history.lastClosedAt = new Date().toISOString();
-    history.lastCloseReason = EXIT_ON_DISCONNECT
-      ? "extension disconnected; port released after grace"
-      : "extension disconnected";
-    log("extension disconnected");
-    if (EXIT_ON_DISCONNECT) {
-      log(
-        `no browser attached — releasing port ${PORT} in ${DISCONNECT_GRACE_MS / 1000}s ` +
-          `(set BSM_EXIT_ON_DISCONNECT=0 to keep waiting)`,
-      );
-      disconnectTimer = setTimeout(() => {
-        log("browser did not come back; exiting so the port is released");
-        shutdown();
-      }, DISCONNECT_GRACE_MS);
+    history.lastCloseReason = "extension disconnected";
+    if (EXIT_ON_DISCONNECT && clients.size === 0) {
+      disconnectTimer = setTimeout(shutdown, DISCONNECT_GRACE_MS);
       disconnectTimer.unref?.();
     }
   };
-  log("extension connected");
-  if (KEEPALIVE_MS > 0) sendKeepalive(next);
+  next.register = (msg) => {
+    if (next.clientId) return;
+    clearTimeout(helloTimer);
+    const legacy = typeof msg.clientId !== "string" || !msg.clientId.trim();
+    const clientId = legacy ? `legacy-${crypto.randomUUID()}` : msg.clientId;
+    const previous = clients.get(clientId)?.source;
+    next.clientId = clientId;
+    clients.set(clientId, { clientId, browser: String(msg.browser ?? msg.name ?? "Unknown browser"), version: String(msg.version ?? "unknown"), transport: String(msg.transport ?? "unknown"), legacy, source: next });
+    if (selectedClientId === null && clients.size === 1) selectedClientId = clientId;
+    if (previous && previous !== next) {
+      rejectSource(previous, "CONNECTION_REPLACED");
+      previous.close(1001);
+    }
+    if (disconnectTimer) clearTimeout(disconnectTimer);
+    disconnectTimer = null;
+    history.everConnected = true;
+    history.connections += 1;
+    history.lastConnectedAt = new Date().toISOString();
+    sendKeepalive(next);
+  };
 }
 
 function handleExtensionMessage(source, text) {
@@ -156,7 +174,7 @@ function handleExtensionMessage(source, text) {
     return; // not JSON — ignore
   }
   if (msg?.type === "hello") {
-    log(`extension hello: ${msg.name ?? "?"} v${msg.version ?? "?"}`);
+    source.register?.(msg);
     return;
   }
   if (msg?.type === "ping") {
@@ -171,7 +189,7 @@ function handleExtensionMessage(source, text) {
   if (msg?.type !== undefined) return; // pong / future status frames
   const requestId = msg?.id;
   const entry = requestId !== undefined && pending.get(requestId);
-  if (!entry) return;
+  if (!entry || entry.source !== source || clients.get(source.clientId)?.source !== source) return;
   clearTimeout(entry.timer);
   pending.delete(requestId);
   if (msg.ok === false) entry.reject(new Error(String(msg.error ?? "extension error")));
@@ -179,11 +197,12 @@ function handleExtensionMessage(source, text) {
 }
 
 async function acquireConnection(waitMs = CONNECT_WAIT_MS) {
-  const deadline = Date.now() + waitMs;
+  const deadline = Date.now() + Math.min(Math.max(waitMs, 0), 30000);
   for (;;) {
-    if (conn && conn.open) return conn;
-    if (Date.now() >= deadline) return null;
-    await sleep(100);
+    const target = clients.get(selectedClientId)?.source;
+    if (target?.open) return target;
+    if (selectedClientId || clients.size > 1 || Date.now() >= deadline) return null;
+    await sleep(50);
   }
 }
 
@@ -192,23 +211,8 @@ async function sendToExtension(tool, params = {}, timeoutMs = REQUEST_TIMEOUT_MS
   const target = await acquireConnection();
   if (!target || !target.open) {
     history.waitTimeouts += 1;
-    const waited = Date.now() - started;
-    if (!history.everConnected) {
-      throw new Error(
-        `No browser has connected to this server yet (waited ${waited}ms on port ${PORT}). ` +
-          `Open the browser, click the "Browser Session MCP" extension icon and press Connect. ` +
-          `Diagnose with: node mcp-server/index.js --doctor`,
-      );
-    }
-    const ago = history.lastClosedAt
-      ? `${Math.round((Date.now() - Date.parse(history.lastClosedAt)) / 1000)}s ago`
-      : "recently";
-    const reason = history.lastCloseReason ? `: ${history.lastCloseReason}` : "";
-    throw new Error(
-      `The browser extension is not connected right now (last connection ended ${ago}${reason}; ` +
-        `waited ${waited}ms on port ${PORT}). Revive it from the extension popup (Disconnect then Connect). ` +
-        `Diagnose with: node mcp-server/index.js --doctor`,
-    );
+    const status = connectionStatus();
+    throw new Error(`${status.state.toUpperCase()}: ${status.nextAction}`);
   }
   const id = crypto.randomUUID();
   return new Promise((resolve, reject) => {
@@ -216,10 +220,10 @@ async function sendToExtension(tool, params = {}, timeoutMs = REQUEST_TIMEOUT_MS
       timeoutMs > 0
         ? setTimeout(() => {
             pending.delete(id);
-            reject(new Error(`Extension response timeout after ${timeoutMs}ms (tool: ${tool})`));
+            reject(new Error(`RESPONSE_TIMEOUT: after ${timeoutMs}ms (tool: ${tool}); action may already have executed; do not automatically retry.`));
           }, timeoutMs)
         : undefined;
-    pending.set(id, { resolve, reject, timer });
+    pending.set(id, { resolve, reject, timer, source: target });
     try {
       target.send(JSON.stringify({ id, tool, params }));
     } catch (err) {
@@ -244,14 +248,11 @@ function sendKeepalive(target) {
 const keepaliveTimer =
   KEEPALIVE_MS > 0
     ? setInterval(() => {
-        if (conn && conn.open) {
-          sendKeepalive(conn);
-          conn.ping();
-          if (Date.now() - conn.lastActivity > 2.5 * KEEPALIVE_MS) {
-            log("extension connection appears dead (no activity), closing it");
-            conn.destroy();
-            conn = null;
-          }
+        for (const { source } of clients.values()) {
+          if (!source.open) continue;
+          sendKeepalive(source);
+          source.ping();
+          if (Date.now() - source.lastActivity > 2.5 * KEEPALIVE_MS) source.destroy();
         }
       }, KEEPALIVE_MS)
     : null;
@@ -290,6 +291,23 @@ const TAB_ID = {
 const withTab = (properties = {}) => ({ tabId: TAB_ID, ...properties });
 
 const TOOLS = [
+  {
+    name: "connection_status",
+    description: "Immediate connection diagnosis without accessing pages or listing tabs.",
+    inputSchema: obj({}),
+    handle: async () => { const status = connectionStatus(); return { ...text(JSON.stringify(status)), structuredContent: status }; },
+  },
+  {
+    name: "browser_select",
+    description: "Explicitly select a connected browser clientId without accessing pages. Selection stays fixed across disconnects.",
+    inputSchema: obj({ clientId: { type: "string" } }, ["clientId"]),
+    handle: async ({ clientId }) => {
+      if (!clients.get(clientId)?.source.open) throw new Error("CLIENT_NOT_CONNECTED: call connection_status and select a connected clientId.");
+      selectedClientId = clientId;
+      const status = connectionStatus();
+      return { ...text(JSON.stringify(status)), structuredContent: status };
+    },
+  },
   {
     name: "navigate",
     description: "Navigate the active tab (or a given tabId) to a URL",
@@ -404,9 +422,7 @@ const TOOLS = [
         typeof payload.value === "string"
           ? payload.value
           : JSON.stringify(payload.value, null, 1) ?? "undefined";
-      if (payload.via !== "isolated") return text(body);
-      const why = payload.mainWorldError ? `the page world failed: ${payload.mainWorldError}` : "the page world was skipped";
-      return text(`${body}\n\n[isolated world — ${why}; the page's own globals are not visible here]`);
+      return { ...text(body), structuredContent: { via: payload.via, ...(payload.mainWorldError ? { mainWorldError: payload.mainWorldError } : {}) } };
     },
   },
   {
@@ -487,6 +503,7 @@ async function handleRequest(msg) {
         protocolVersion,
         capabilities: { tools: {} },
         serverInfo: { name: "browser-session-mcp", version: VERSION },
+        instructions: "Call connection_status first; with multiple clients call browser_select(clientId); then tabs_list; use explicit tabId for page tools. If disconnected, give the user nextAction and stop retrying page tools. Never automatically retry an action whose outcome is uncertain.",
       });
     }
     case "ping":
@@ -569,7 +586,7 @@ function shutdown() {
   }
   pending.clear();
   try {
-    conn?.close(1001);
+    for (const { source } of clients.values()) source.close(1001);
   } catch {
     /* already gone */
   }
@@ -592,7 +609,7 @@ async function runDoctor() {
   const hostDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "native-messaging-host");
   const chromeIdFile = path.join(hostDir, "chrome-extension-id.txt");
   const nativeHostName = "browser_session_mcp";
-  const waitMs = intEnv("BSM_DOCTOR_WAIT_MS", undefined, 3000);
+  const waitMs = DOCTOR_WAIT_MS;
   const line = (level, name, detail) => console.log(`${level}  ${name}  ${detail}`);
 
   // 1. Can this server listen where it was told to?
@@ -651,24 +668,28 @@ async function runDoctor() {
     }
   }
 
-  // 4. Really listen on the configured port and see whether anything connects.
+  // 4. Really listen on the configured port and see whether a client connects
+  //    and identifies itself: only a `hello` frame proves an extension is
+  //    attached, so a bare TCP/WebSocket connection is not reported as one.
   let clientConnected = false;
   let clientInfo = null;
+  const sockets = [];
   if (busy) {
     line("WARN", "client", `cannot probe 127.0.0.1:${PORT} while the port is busy`);
   } else {
     let server = null;
-    let conn = null;
     try {
       server = await createWsServer({
         port: PORT,
         onConnection: (next) => {
-          conn = next;
-          clientConnected = true;
+          sockets.push(next);
           next.onmessage = (text) => {
             try {
               const msg = JSON.parse(text);
-              if (msg?.type === "hello") clientInfo = `${msg.name ?? "?"} v${msg.version ?? "?"}`;
+              if (msg?.type === "hello") {
+                clientConnected = true;
+                clientInfo = `${msg.name ?? "?"} v${msg.version ?? "?"}`;
+              }
             } catch {
               /* not a hello frame */
             }
@@ -682,12 +703,16 @@ async function runDoctor() {
     } catch (err) {
       line("FAIL", "client", `could not listen on 127.0.0.1:${PORT}: ${err?.message ?? err}`);
     } finally {
-      try {
-        conn?.destroy();
-      } catch {
-        /* already gone */
+      // Destroy every accepted socket so close() cannot wait forever on a
+      // lingering connection, then bound the close itself.
+      for (const socket of sockets) {
+        try {
+          socket.destroy();
+        } catch {
+          /* already gone */
+        }
       }
-      if (server) await new Promise((resolve) => server.close(resolve));
+      if (server) await Promise.race([new Promise((resolve) => server.close(resolve)), sleep(1000)]);
     }
     if (clientConnected) {
       line(
