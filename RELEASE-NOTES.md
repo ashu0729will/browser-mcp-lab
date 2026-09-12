@@ -1,8 +1,22 @@
-# Browser Session MCP 0.4.0 发布说明 / Release Notes
+# Browser Session MCP 0.4.1 发布说明 / Release Notes
 
-发布日期 / Released: 2026-09-11
+发布日期 / Released: 2026-09-12
 
-本版聚焦**安装、启动、连接诊断与断连恢复**，并统一发布一致性。没有新增扩展权限。
+本版修复 0.4.0 的一个连接中断缺陷，并保持 0.4.0 的安装、启动、连接诊断与断连恢复改进。
+没有新增扩展权限。
+
+## 0.4.1 修复 / Fix in 0.4.1
+
+- **超限消息不再中断连接**：客户端对单条消息有上限，超过时会报
+  “mcp server sent an oversized message”，随后**丢弃服务器并使全部工具变成
+  “unknown mcp tool”**。旧版会把页面返回的整份 JSON/接口数据原样发出去，一次超大读取即可
+  触发该故障。现在服务器对**每一条输出帧**设上限（`BSM_MAX_MESSAGE_BYTES`，默认 1 MiB，最小 64 KiB）：
+  超限的**工具结果**改为返回有界、可操作的 `RESULT_TOO_LARGE` 工具错误，说明连接仍然正常、其他工具
+  仍可用；服务器与工具注册保持存活，不再需要重启。该上限是服务器侧保证，仍需低于客户端自身的消息上限。
+  上限刻意高于服务器自己的 `tools/list` 帧（约 5.8 KB），以免上限反噬工具发现。
+- 该行为由 `mcp-server/tests/limits.test.js` 覆盖（3 项）：超限结果被转为工具错误且保留请求 id、
+  按 UTF-8 字节而非字符计量、**没有任何一帧超过上限**、随后普通调用仍然成功；并断言最小上限下
+  `tools/list` 仍然完整、默认上限不影响正常大小的结果。
 
 ## 主要变化 / Highlights
 
@@ -28,7 +42,7 @@
 ## 测试 / Tests
 
 - `npm test` 离线全绿：server 33 / bridge 8 / disconnect 4 / connections 1 /
-  extension-transport 95 / doctor 3 / packaging 7，共 **151** 项通过。
+  extension-transport 95 / doctor 3 / limits 3 / packaging 7，共 **154** 项通过。
 - 覆盖：服务器先启动、浏览器先启动、短暂断开与恢复、用户主动断开不被自动重连覆盖、
   旧连接回调隔离、多浏览器同时接入不误转发。
 - 全部测试设有超时上限，失败不依赖无限等待或人工重试。

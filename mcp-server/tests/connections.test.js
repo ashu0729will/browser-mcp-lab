@@ -3,12 +3,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const serverFile = fileURLToPath(new URL("../index.js", import.meta.url));
+// Read the version the release actually ships instead of a literal, so a
+// version bump cannot silently desynchronise this assertion.
+const VERSION = JSON.parse(readFileSync(fileURLToPath(new URL("../../package.json", import.meta.url)), "utf8")).version;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(fn, label) {
   const end = Date.now() + 4000;
@@ -63,7 +66,7 @@ test("offline diagnosis, multiple clients, source binding, replacement and recov
   const call = (name, args = {}) => rpc("tools/call", { name, arguments: args });
   const status = async () => (await call("connection_status")).structuredContent;
   const init = await rpc("initialize");
-  assert.equal(init.serverInfo.version, "0.4.0");
+  assert.equal(init.serverInfo.version, VERSION);
   assert.match(init.instructions, /connection_status.*browser_select.*tabs_list.*tabId/);
   assert.equal((await status()).state, "disconnected");
   assert.match((await status()).nextAction, /Connect/);

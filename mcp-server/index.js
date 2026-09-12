@@ -68,6 +68,14 @@ const QUIET = boolEnv("BSM_QUIET", "BML_QUIET", false);
 const EXIT_ON_DISCONNECT = boolEnv("BSM_EXIT_ON_DISCONNECT", "BML_EXIT_ON_DISCONNECT", false);
 const DISCONNECT_GRACE_MS = intEnv("BSM_DISCONNECT_GRACE_MS", "BML_DISCONNECT_GRACE_MS", 15000);
 const DOCTOR_WAIT_MS = intEnv("BSM_DOCTOR_WAIT_MS", undefined, 3000);
+// The client rejects a single message above its own limit ("mcp server sent an
+// oversized message") and then drops the server, which makes every tool fail
+// with "unknown mcp tool". Unbounded page data — a whole JSON/API dump returned
+// through evaluate/read — is enough to trigger it, so no frame may exceed this.
+// The floor must sit above the server's own largest protocol frame: tools/list is
+// ~5.8 KB today, so a 4096 floor would let a low cap swallow tool discovery and
+// reproduce the very "unknown mcp tool" symptom this guard exists to prevent.
+const MAX_MESSAGE_BYTES = intEnv("BSM_MAX_MESSAGE_BYTES", "BML_MAX_MESSAGE_BYTES", 1048576, { min: 65536 });
 
 const log = (...parts) => {
   if (!QUIET) console.error(`[browser-session-mcp] ${parts.join(" ")}`);
@@ -483,10 +491,58 @@ const TOOLS = [
 // MCP over stdio (newline-delimited JSON-RPC 2.0)
 // ---------------------------------------------------------------------------
 
-const write = (msg) => process.stdout.write(JSON.stringify(msg) + "\n");
+const frameBytes = (text) => Buffer.byteLength(text, "utf8");
+// The trailing newline goes on the wire too, so it counts against the cap.
+const wireBytes = (text) => frameBytes(text) + 1;
+const oversizedHint = (bytes) =>
+  `RESULT_TOO_LARGE: the result is ${bytes} bytes, which is over the ${MAX_MESSAGE_BYTES}-byte message cap, so it was not sent. The connection is still healthy and other tools still work. Ask for less: read specific elements instead of whole documents, use snapshot with a small max, or select only the fields you need instead of dumping a complete API/JSON response. To allow deliberately larger results, raise BSM_MAX_MESSAGE_BYTES for this server — but keep it below the limit of the client that reads this server.`;
+
+const write = (msg) => {
+  const text = JSON.stringify(msg);
+  const bytes = wireBytes(text);
+  if (bytes <= MAX_MESSAGE_BYTES) {
+    process.stdout.write(text + "\n");
+    return;
+  }
+  // Last-resort guard: an oversized frame must never reach the client, because
+  // the client answers it by dropping the server and unregistering every tool.
+  log(`dropped an oversized frame (${bytes} bytes > ${MAX_MESSAGE_BYTES})`);
+  let fallback = JSON.stringify({
+    jsonrpc: "2.0",
+    id: msg?.id ?? null,
+    error: { code: -32603, message: oversizedHint(bytes) },
+  });
+  // The fallback echoes the caller's id, which is itself client-sized, so it is
+  // measured again: the guarantee only holds if the reply is bounded too.
+  if (wireBytes(fallback) > MAX_MESSAGE_BYTES) {
+    fallback = JSON.stringify({
+      jsonrpc: "2.0",
+      id: null,
+      error: {
+        code: -32603,
+        message: `RESULT_TOO_LARGE: a ${bytes}-byte response exceeded the ${MAX_MESSAGE_BYTES}-byte message cap and was not sent.`,
+      },
+    });
+  }
+  process.stdout.write(fallback + "\n");
+};
+
 const reply = (id, result) => write({ jsonrpc: "2.0", id, result });
 const replyError = (id, code, message) =>
   write({ jsonrpc: "2.0", id, error: { code, message } });
+
+// Tool results report oversize as a tool-level error, which an agent can act on
+// directly, instead of as a protocol error it would have to interpret.
+function replyTool(id, result) {
+  const text = JSON.stringify({ jsonrpc: "2.0", id, result });
+  const bytes = wireBytes(text);
+  if (bytes <= MAX_MESSAGE_BYTES) {
+    process.stdout.write(text + "\n");
+    return;
+  }
+  log(`bounded an oversized tool result (${bytes} bytes > ${MAX_MESSAGE_BYTES})`);
+  reply(id, { content: [{ type: "text", text: oversizedHint(bytes) }], isError: true });
+}
 
 const PROTOCOL_VERSIONS = ["2024-11-05", "2025-03-26", "2025-06-18"];
 
@@ -521,15 +577,15 @@ async function handleRequest(msg) {
       const args = params?.arguments ?? {};
       const tool = TOOLS.find((t) => t.name === name);
       if (!tool) {
-        return reply(id, {
+        return replyTool(id, {
           content: [{ type: "text", text: `Tool "${name}" not found` }],
           isError: true,
         });
       }
       try {
-        return reply(id, await tool.handle(args));
+        return replyTool(id, await tool.handle(args));
       } catch (err) {
-        return reply(id, {
+        return replyTool(id, {
           content: [{ type: "text", text: String(err?.message ?? err) }],
           isError: true,
         });

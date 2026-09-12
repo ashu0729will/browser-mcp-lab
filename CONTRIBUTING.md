@@ -11,7 +11,7 @@
 npm test
 ```
 
-离线跑全部测试（server 33 / bridge 8 / disconnect 4 / connections 1 / extension-transport 95 / doctor 3 / packaging 7，共 151 项），必须全绿。
+离线跑全部测试（server 33 / bridge 8 / disconnect 4 / connections 1 / extension-transport 95 / doctor 3 / limits 3 / packaging 7，共 154 项），必须全绿。
 只跑单套：`node mcp-server/tests/<name>.test.js`。
 
 改动 `.js` 后至少跑一次 `node --check <file>`；改了 `browser-extension/service-worker.js`

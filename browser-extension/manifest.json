@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Browser Session MCP",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Let AI agents drive the current browser session through the local browser-session-mcp server. Works in Chrome, Edge and Firefox.",
   "author": "ashu0729will",
   "permissions": ["tabs", "scripting", "storage", "alarms", "nativeMessaging"],

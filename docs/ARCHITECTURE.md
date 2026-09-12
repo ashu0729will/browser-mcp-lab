@@ -105,13 +105,18 @@ Firefox 临时附加组件修改后无需点击「重载」：断开原生消息
 - 防假死：应用层心跳 + 双向 ping/pong 往返 + 2.5 个周期无活动即清扫半开连接。
 - 浏览器断开后是否退出：仅当显式设置 `BSM_EXIT_ON_DISCONNECT` 时，才在 15s（`BSM_DISCONNECT_GRACE_MS`）宽限后自动退出并释放端口；默认保持服务器运行。
 - 环境变量：`BSM_PORT` `BSM_CONNECT_WAIT_MS` `BSM_KEEPALIVE_MS` `BSM_REQUEST_TIMEOUT_MS`
-  `BSM_DISCONNECT_GRACE_MS` `BSM_EXIT_ON_DISCONNECT` `BSM_QUIET`（旧 `BML_*` 名称仍被接受），
+  `BSM_DISCONNECT_GRACE_MS` `BSM_EXIT_ON_DISCONNECT` `BSM_QUIET` `BSM_DOCTOR_WAIT_MS`
+  `BSM_MAX_MESSAGE_BYTES`（旧 `BML_*` 名称仍被接受），
   以及仅桥使用的 `BSM_WS_URL`。
 - 挂起感知重连：`chrome.tabs.onActivated` / `chrome.windows.onFocusChanged` 也会触发幂等的
   `startTransport()`，把重连对齐到「真的在用浏览器」的那一刻，不依赖会随 MV3 worker 挂起丢失的 3s 定时器。
 - `--doctor` 自检：`node mcp-server/index.js --doctor` 逐项检查端口占用、原生宿主注册与 manifest、
   扩展 ID 文件、以及等待窗口（`BSM_DOCTOR_WAIT_MS`，默认 3000ms）内是否有客户端连上，末行 `VERDICT:` 给结论；
   服务器同时记录连接历史（是否连过、上次断开时间与原因），连接错误据此区分「从未连接」与「曾连接已断开」。
+- 输出帧上限：客户端对单条 MCP 消息有自己的上限，超过会被丢弃并使全部工具变成
+`unknown mcp tool`。因此每条输出消息都受 `BSM_MAX_MESSAGE_BYTES`（默认 1 MiB，最小 64 KiB）约束，
+下限刻意高于服务器自身最大的协议帧（`tools/list` 约 5.8 KB），以免上限反噬工具发现；超限的工具结果
+改以有界、可操作的 `RESULT_TOO_LARGE` 工具错误返回，服务器与工具注册保持存活。
 
 ## 6. 测试
 
@@ -125,6 +130,7 @@ Firefox 临时附加组件修改后无需点击「重载」：断开原生消息
 | `mcp-server/tests/connections.test.js` | 1 项（`node:test`）：离线诊断、多客户端选择、来源绑定、替换与恢复 |
 | `mcp-server/tests/doctor.test.js` | 3 项（`node --test`）：`--doctor` 无客户端、扩展 hello 后判定已连接、仅裸连接不误判为扩展，并断言探测始终在时限内结束 |
 | `tools/tests/packaging.test.js` | 7 项（`node --test`）：商店包与源码包内容、排除规则、重建确定性、换行无关性、ZIP CRC/解压校验 |
+| `mcp-server/tests/limits.test.js` | 3 项（`node --test`）：超限结果转为 `RESULT_TOO_LARGE` 工具错误且保留请求 id、按 UTF-8 字节而非字符计量、没有任何一帧超过上限、随后普通调用仍成功，以及最小上限下 `tools/list` 仍完整、默认上限不影响正常结果 |
 
 真机测试：`e2e-firefox.js`、`real-click-test.js`、`real-trust-test.js`、`demo-cursor.js`。
 
@@ -145,5 +151,6 @@ Firefox 临时附加组件修改后无需点击「重载」：断开原生消息
 - [x] v0.3.2 受信任输入；`click.force`；事件保真度实验页
 - [x] v0.3.3 改名 Browser Session MCP、目录规范化、双通道状态统一、schema 与文档对齐
 - [x] v0.4.0 安装/启动/连接诊断与恢复；客户端内 `connection_status` / `browser_select`；挂起感知重连；发布一致性
+- [x] v0.4.1 输出帧上限 `BSM_MAX_MESSAGE_BYTES`：超限结果返回可操作错误而不中断连接
 - [ ] v0.5.0 真实按键路径
 - [ ] 商店发布
